@@ -6,7 +6,9 @@ import pandas_datareader.data as reader
 import pandas_ta as ta
 
 
-# TODO: Add artificial download of at least 26 additional records to handle NaN in MACD index
+# TODO: Fix args for pipeline
+# TODO: Add comments
+
 
 class DataCollector:
     def __init__(self, stock_name: str = '^GSPC'):
@@ -68,6 +70,24 @@ class DataCollector:
             data.fillna({column: mean}, inplace=True)
 
 
+    # Downloads the main data + 26 days before the interval to
+    # Avoid NaN in MACD
+    def __download_main_data(self, tickers: str, period: str, interval: str) -> pd.DataFrame | None:
+
+        # Valid periods based on the yf documentation
+        transitions = {
+            '1d': '1mo',
+            '1m': '3mo',
+            '3mo': '6mo',
+            '6mo': '1y',
+            '1y': '2y'
+        }
+
+        valid_period = transitions[period]
+        data = yf.download(tickers=tickers, period=valid_period, interval=interval,  multi_level_index=False)
+
+        return data
+
     # Default stock name - ^GSPC -- S&P 500
     def __collect_data(self, stock_name: str = '^GSPC', period: str = '1mo', interval: str = '1d', start: date | None = None, end: date | None = None, **kwargs) -> pd.DataFrame:
 
@@ -84,11 +104,11 @@ class DataCollector:
         # Download latest OHLCV (or desired interval chosen by `start` and `end`)
         # OHLCV - Open, High, Low, Close, Volume
         if start is not None and end is not None:
-            start, end = validate_dates(start, end, timedelta(days=93))
+            start, end = validate_dates(start, end, timedelta(days=120))
             data = yf.download(tickers=stock_name, start=start, end=end, multi_level_index=False)
         else:
-            start, end = validate_dates(*get_past_datetime(period=period), timedelta(days=93))
-            data = yf.download(tickers=stock_name, period=period, interval=interval,  multi_level_index=False)
+            start, end = validate_dates(*get_past_datetime(period=period), timedelta(days=120))
+            data = self.__download_main_data(tickers=stock_name, period=period, interval=interval)
 
         if data is None:
             raise RuntimeError('No such stock data')
@@ -115,6 +135,23 @@ class DataCollector:
 
         return data
 
+    # Since during data collection we have downloaded more then we initially wanted
+    # We need to crop it
+    def __crop_to_desired_dates(self, df: pd.DataFrame, period: str = '1mo', start: date | None = None, end: date | None = None) -> pd.DataFrame:
+        # Check if exact dates were specified, in other case - define them from period
+        if start is None or end is None:
+            start, end = get_past_datetime(period=period)
+
+        start = pd.to_datetime(start)
+        end = pd.to_datetime(end)
+
+        # Cast dates to avoid errors
+        if not isinstance(df.index, pd.DatetimeIndex):
+            df.index = pd.to_datetime(df.index, format='%Y-%m-%d')
+
+        filtered_df = df.loc[(df.index >= start) & (df.index <= end)]
+
+        return filtered_df
 
     # Main pipeline
     def data_collection_pipeline(self, path: str = 'data', **kwargs) -> pd.DataFrame:
@@ -127,10 +164,13 @@ class DataCollector:
         # Handle missing values
         self.__remove_missing(data, **kwargs)
 
-        # Save
-        data.to_csv(path + '/training.csv')
+        # Extract desired period
+        cropped = self.__crop_to_desired_dates(data, **kwargs)
 
-        return data
+        # Save
+        cropped.to_csv(path + '/training.csv')
+
+        return cropped
 
 
 collector = DataCollector()
