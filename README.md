@@ -21,15 +21,18 @@ Main parts:
 - Deployment, logging, and controlling of the model (most probable - mlflow)
 - Production-ready code
 
+## Done
 First, i need to determine what i trade - usdt, gold, bitcoin, stocks. It seems to me that there is no great difference for me, since i am a ML engineer. However, maybe some of these examples can show very undeterministic behavior and undeterminable patterns, so all my attempts will be collapsed and i will cry. So i need to choose carefully: i need the good with the great amount of data and some predictable patterns.
 Questions:
     1. What type of good should i choose?
 
+## Partially Done
 Second, i need to get the data for training. I need to find datasets on Kaggle or Google Datasets Search so far and so forth. But such data can be too outdated. I need to directly take data from Markets like Binance or whatever. But this data will be available in very very small size. But, i can get it from multiple places, so if i will at least mix some data from fresh datasets from Kaggle and my own, i will get a good data for training. Additionally, i will be able to add the new feature to my bot - synchronization with the latest data from some markets and online training for model.
 Questions:
     1. Do you find my strategy of data collection optimal?
     2. Suggest markets with open api so i can get data from it.
 
+## Partially Done
 Third, i need to determine what data i need. It is the easiest part - i need to have something like this - timestamps, the current price, price direction (up/down), how much the price changed (within some period of time), number of sellers and buyers (if available).
 Questions:
     1. Will it be sufficient for my case.
