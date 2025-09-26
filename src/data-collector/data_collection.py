@@ -76,14 +76,16 @@ class DataCollector:
 
         # Valid periods based on the yf documentation
         transitions = {
-            '1d': '1mo',
-            '1m': '3mo',
+            '1d': '5d',
+            '5d': '1mo',
+            '1mo': '3mo',
             '3mo': '6mo',
             '6mo': '1y',
             '1y': '2y'
         }
 
         valid_period = transitions[period]
+
         data = yf.download(tickers=tickers, period=valid_period, interval=interval,  multi_level_index=False)
 
         return data
@@ -104,8 +106,14 @@ class DataCollector:
         # Download latest OHLCV (or desired interval chosen by `start` and `end`)
         # OHLCV - Open, High, Low, Close, Volume
         if start is not None and end is not None:
+            # This part is needed if you want to download data per minutes
+            delta = timedelta(days=120 if interval[-1] != 'm' else 1)
+            start, end = validate_dates(start, end, delta)
+
+            data = yf.download(tickers=stock_name, start=start, end=end, interval=interval, multi_level_index=False)
+
+            # This will ensure that GDP was measured
             start, end = validate_dates(start, end, timedelta(days=120))
-            data = yf.download(tickers=stock_name, start=start, end=end, multi_level_index=False)
         else:
             start, end = validate_dates(*get_past_datetime(period=period), timedelta(days=120))
             data = self.__download_main_data(tickers=stock_name, period=period, interval=interval)
@@ -137,42 +145,51 @@ class DataCollector:
 
     # Since during data collection we have downloaded more then we initially wanted
     # We need to crop it
-    def __crop_to_desired_dates(self, df: pd.DataFrame, period: str = '1mo', start: date | None = None, end: date | None = None) -> pd.DataFrame:
+    def __crop_to_desired_dates(self, df: pd.DataFrame, period: str = '1mo', start: date | None = None, end: date | None = None, **kwargs) -> pd.DataFrame:
         # Check if exact dates were specified, in other case - define them from period
         if start is None or end is None:
             start, end = get_past_datetime(period=period)
 
-        start = pd.to_datetime(start)
-        end = pd.to_datetime(end)
+        start = pd.to_datetime(start, utc=True)
+        end = pd.to_datetime(end, utc=True)
 
         # Cast dates to avoid errors
         if not isinstance(df.index, pd.DatetimeIndex):
-            df.index = pd.to_datetime(df.index, format='%Y-%m-%d')
+            df.index = pd.to_datetime(df.index, format='%Y-%m-%d', utc=True)
 
         filtered_df = df.loc[(df.index >= start) & (df.index <= end)]
+
+        # To follow same style in case of minutes
+        filtered_df.index.rename('Date', inplace=True)
 
         return filtered_df
 
     # Main pipeline
-    def data_collection_pipeline(self, path: str = 'data', **kwargs) -> pd.DataFrame:
+    def data_collection_pipeline(self, path: str = 'data', **kwargs) -> pd.DataFrame | None:
         # Collect fresh data from FRED and Yahoo Finance
-        data = self.__collect_data(**kwargs)
+        # If something goes wrong, there is no need to continue, so we can terminate
+        try:
+            data = self.__collect_data(**kwargs)
 
-        # Add Micro Indexes: SMA, RSI, MACD
-        self.__add_micro_indexes(data, **kwargs)
+            # Add Micro Indexes: SMA, RSI, MACD
+            self.__add_micro_indexes(data, **kwargs)
 
-        # Handle missing values
-        self.__remove_missing(data, **kwargs)
+            # Handle missing values
+            self.__remove_missing(data, **kwargs)
 
-        # Extract desired period
-        cropped = self.__crop_to_desired_dates(data, **kwargs)
+            # Extract desired period
+            cropped = self.__crop_to_desired_dates(data, **kwargs)
 
-        # Save
-        cropped.to_csv(path + '/training.csv')
+            # Save
+            cropped.to_csv(path + '/training.csv')
+        except Exception as e:
+            # If data was not downloaded or something else has happened return None
+            print(f'Sorry, something has happened: {e}')
+            return None
 
         return cropped
 
 
 collector = DataCollector()
-data = collector.data_collection_pipeline(period='1y')
+data = collector.data_collection_pipeline(start='2025-09-19', end='2025-09-24', interval='1m')
 print(data)

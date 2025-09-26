@@ -20,12 +20,16 @@ class Market(gym.Env):
         self.stocks = 0.0
         self.cash = initial_cash
 
-    def step(self, action):
+        self.current_date = self.data.head(1).index
+
+    def step(self, action: float):
+        # action -> float [-1, 1]
+        # return - data[i]
+
+        # good:
+        # 1. 
         pass
 
     def reset(self, seed: int):
         pass
 
-
-m = Market('/home/danil/Documents/ML/Project/Untitled_Trading_Bot/data/training.csv')
-print(m.action_space.sample())
