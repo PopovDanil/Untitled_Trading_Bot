@@ -5,12 +5,18 @@ from utils import get_past_datetime, validate_dates
 import pandas_datareader.data as reader
 import pandas_ta as ta
 
-
 # TODO: Fix args for pipeline
 # TODO: Add comments
 
+# TODO: Add standardization and ability to save mean and std
+# TODO: Add ability to include/exclude macro
+# TODO: I really need to stick to one stock? If there is only one optimal strategy, so it should be uniform
+# TODO: move to npz
+# TODO: Split into train/test/validation
+# TODO: Add extraction
+# TODO: Add PER
 
-class DataCollector:
+class Data_Collector:
     def __init__(self, stock_name: str = '^GSPC'):
         self.stock_name = stock_name
 
@@ -91,7 +97,7 @@ class DataCollector:
         return data
 
     # Default stock name - ^GSPC -- S&P 500
-    def __collect_data(self, stock_name: str = '^GSPC', period: str = '1mo', interval: str = '1d', start: date | None = None, end: date | None = None, **kwargs) -> pd.DataFrame:
+    def __collect_data(self, stock_name: str = '^GSPC', period: str = '1mo', interval: str = '1d', start: date | None = None, end: date | None = None, add_macro: bool = True, **kwargs) -> pd.DataFrame:
 
         # Encoder for macro indicators
         macro_indicators = {
@@ -121,25 +127,25 @@ class DataCollector:
         if data is None:
             raise RuntimeError('No such stock data')
 
-        # Download Macroeconomics Indicators
-        macro = {
-            'CPIAUCSL': reader.DataReader(name='CPIAUCSL', data_source='fred', start=start, end=end),
-            'UNRATE': reader.DataReader(name='UNRATE', data_source='fred', start=start, end=end),
-            'FEDFUNDS': reader.DataReader(name='FEDFUNDS', data_source='fred', start=start, end=end),
-            'GDP': reader.DataReader(name='GDP', data_source='fred', start=start, end=end),
-            'DGS10': reader.DataReader(name='DGS10', data_source='fred', start=start, end=end),
-            'VIXCLS': reader.DataReader(name='VIXCLS', data_source='fred', start=start, end=end),
-        }
+        if add_macro:
+            # Download Macroeconomics Indicators
+            macro = {
+                'CPIAUCSL': reader.DataReader(name='CPIAUCSL', data_source='fred', start=start, end=end),
+                'UNRATE': reader.DataReader(name='UNRATE', data_source='fred', start=start, end=end),
+                'FEDFUNDS': reader.DataReader(name='FEDFUNDS', data_source='fred', start=start, end=end),
+                'GDP': reader.DataReader(name='GDP', data_source='fred', start=start, end=end),
+                'DGS10': reader.DataReader(name='DGS10', data_source='fred', start=start, end=end),
+                'VIXCLS': reader.DataReader(name='VIXCLS', data_source='fred', start=start, end=end),
+            }
 
-        # Sometimes FRED does not collect statistics for long time, so validation is required
-        # If some indicator is missing, we should use the last one
-        for indicator in macro.keys():
-            if macro[indicator].empty:
-                macro[indicator] = reader.DataReader(name=indicator, data_source='fred').tail(1)
+            # Sometimes FRED does not collect statistics for long time, so validation is required
+            # If some indicator is missing, we should use the last one
+            for indicator in macro.keys():
+                if macro[indicator].empty:
+                    macro[indicator] = reader.DataReader(name=indicator, data_source='fred').tail(1)
 
-            # Add to the main table and adjust shapes
-            self.__broadcast_data(data, macro[indicator][indicator], macro_indicators[indicator])
-
+                # Add to the main table and adjust shapes
+                self.__broadcast_data(data, macro[indicator][indicator], macro_indicators[indicator])
 
         return data
 
@@ -154,8 +160,7 @@ class DataCollector:
         end = pd.to_datetime(end, utc=True)
 
         # Cast dates to avoid errors
-        if not isinstance(df.index, pd.DatetimeIndex):
-            df.index = pd.to_datetime(df.index, format='%Y-%m-%d', utc=True)
+        df.index = pd.to_datetime(df.index, utc=True)
 
         filtered_df = df.loc[(df.index >= start) & (df.index <= end)]
 
@@ -165,14 +170,15 @@ class DataCollector:
         return filtered_df
 
     # Main pipeline
-    def data_collection_pipeline(self, path: str = 'data', **kwargs) -> pd.DataFrame | None:
+    def data_collection_pipeline(self, path: str = 'data', add_micro: bool = True, **kwargs) -> pd.DataFrame | None:
         # Collect fresh data from FRED and Yahoo Finance
         # If something goes wrong, there is no need to continue, so we can terminate
         try:
             data = self.__collect_data(**kwargs)
 
             # Add Micro Indexes: SMA, RSI, MACD
-            self.__add_micro_indexes(data, **kwargs)
+            if add_micro:
+                self.__add_micro_indexes(data, **kwargs)
 
             # Handle missing values
             self.__remove_missing(data, **kwargs)
@@ -189,7 +195,5 @@ class DataCollector:
 
         return cropped
 
-
-collector = DataCollector()
-data = collector.data_collection_pipeline(start='2025-09-19', end='2025-09-24', interval='1m')
-print(data)
+data = Data_Collector()
+data.data_collection_pipeline(start='2025-09-23', end='2025-09-24', interval='1m')
