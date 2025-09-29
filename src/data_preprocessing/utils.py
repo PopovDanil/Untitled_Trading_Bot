@@ -10,12 +10,17 @@ def get_past_datetime(period: str = '1mo') -> Tuple[date, date]:
         '1d': timedelta(days=1),
         '1mo': timedelta(days=31),
         '1y': timedelta(days=365),
+        '2y': timedelta(days=2 * 365),
+        '3y': timedelta(days=3 * 365),
+        '4y': timedelta(days=4 * 365),
+        '5y': timedelta(days=5 * 365),
     }
 
     end = date.today()
     start = end - deltas[period]
 
     return start, end
+
 
 # Adjust to minimal period of data collection
 def validate_dates(start: date | str, end: date | str, min_difference: timedelta) -> Tuple[date, date]:
@@ -29,3 +34,11 @@ def validate_dates(start: date | str, end: date | str, min_difference: timedelta
         start = end - min_difference
 
     return start, end
+
+
+# Range Dates
+def daterange(start: date, end: date):
+    days = int((end - start).days)
+
+    for n in range(days - 1):
+        yield start + timedelta(days=n), start + timedelta(days=n+1)
