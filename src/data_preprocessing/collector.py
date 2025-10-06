@@ -4,6 +4,7 @@ from datetime import date, timedelta
 from .utils import get_past_datetime, validate_dates
 import pandas_datareader.data as reader
 import pandas_ta as ta
+from typing import Tuple
 
 # TODO: Fix args for pipeline
 # TODO: Add comments
@@ -197,7 +198,7 @@ class Data_Collector:
         return filtered_df
 
     # Main pipeline
-    def collect_data(self, *args, **kwargs) -> pd.DataFrame | None:
+    def collect_data(self, *args, **kwargs) -> Tuple[pd.DataFrame, bool]:
         # Collect fresh data from FRED and Yahoo Finance
         # If something goes wrong, there is no need to continue, so we can terminate
 
@@ -215,6 +216,7 @@ class Data_Collector:
         cropped = self.__crop_to_desired_dates(data, **kwargs)
 
         # Save
-        cropped.to_csv(self.file_save_to)
+        if not cropped.empty:
+            cropped.to_csv(self.file_save_to)
 
-        return cropped
+        return cropped, cropped.empty

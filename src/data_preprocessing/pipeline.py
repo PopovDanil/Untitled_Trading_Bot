@@ -1,7 +1,10 @@
 from .collector import Data_Collector
 from .extractor import Data_Extractor
 from .scaler import Data_Scaler
-from .utils import get_past_datetime, daterange
+from .utils import get_past_datetime, daterange, discard_files, get_files
+
+
+# TODO: Add scaler per stock
 
 
 futures_tickers = [
@@ -23,15 +26,15 @@ futures_tickers = [
 ]
 
 
-def get_data(period: str = '4y') -> str:
+def update_training_dataset(period: str = '1mo') -> str:
     # Get dates for data collection
     start, end = get_past_datetime(period=period)
 
     # Initialize perprocessers
     extractor = Data_Extractor()
-    scaler = Data_Scaler()
+    scaler = Data_Scaler(use_existing=False)
 
-    collected_data_file_names = []
+    collected_data_files = []
 
     # Collect futures
     for ticket in futures_tickers:
@@ -40,15 +43,35 @@ def get_data(period: str = '4y') -> str:
 
             try:
                 collector = Data_Collector(file_save_to=file_name, stock_name=ticket, start=date_s, end=date_e)
-                collector.collect_data()
+                _, empty = collector.collect_data()
 
-                collected_data_file_names.append(file_name)
+                if not empty: collected_data_files.append(file_name)
             except Exception as e:
+                # TODO: add something
                 pass
 
-    file = extractor.extract_data(files=collected_data_file_names)
+    file = extractor.extract_data(files=collected_data_files)
     file = scaler.scale_data(file)
 
+    # Clean the raw data storage
+    discard_files(collected_data_files)
+
     print(f'Your beautiful data is ready! You can find it here: {file}')
+
+    return file
+
+# cut first n rows in the list, and add fresh
+def merge_new_and_old():
+    pass
+
+
+def preprocess_dataset(directory: str = 'data') -> str:
+    extractor = Data_Extractor()
+    scaler = Data_Scaler(use_existing=False)
+
+    files = get_files(dir=directory)[:5]
+
+    file = extractor.extract_data(files=files)
+    scaler.scale_data(file)
 
     return file

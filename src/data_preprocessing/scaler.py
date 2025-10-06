@@ -4,15 +4,29 @@ import joblib
 
 
 # TODO: add golb to find ready files
-
+# TODO: Add scaler per future, since the prices are very
 class Data_Scaler:
-    def __init__(self, saving_path: str = 'data/ready/', scaler_name: str = 'Std'):
+    def __init__(self, saving_path: str = 'data/ready/', scaler_name: str = 'Std', use_existing: bool = True):
         self.saving_path = saving_path
         self.scaler_name = scaler_name
-        self.scaler = {
-            'MinMax': MinMaxScaler(),
-            'Std': StandardScaler()
-        }[scaler_name]
+        self.use_existing = use_existing
+
+        if not use_existing:
+            self.scaler = {
+                'MinMax': MinMaxScaler(),
+                'Std': StandardScaler()
+            }[scaler_name]
+        else:
+            self.scaler = self.__load_scaler()
+
+    def __load_scaler(self) -> StandardScaler | MinMaxScaler | None:
+        scaler = None
+        try:
+            scaler = joblib.load(self.saving_path)
+        except Exception as e:
+            print(f"Error while loading the scaler: {e}")
+
+        return scaler
 
     def __fit_scaler_(self, data, *args, **kwargs) -> np.ndarray:
         self.scaler.fit(data)
@@ -33,7 +47,9 @@ class Data_Scaler:
         data = np.load(path_to_data, allow_pickle=True)['data']
 
         data_stacked = np.concat([data[idx] for idx in range(data.shape[0])], axis=0)
-        self.__fit_scaler_(data_stacked)
+
+        if not self.use_existing:
+            self.__fit_scaler_(data_stacked)
         scaled = self.transform(data)
 
         file_name = self.saving_path + 'ready.npz'

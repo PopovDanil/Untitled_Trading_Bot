@@ -1,5 +1,7 @@
 from datetime import timedelta, date, datetime
 from typing import Tuple
+import glob
+import os
 
 
 # Valid 1h, 1d, 1mo, 1y
@@ -42,3 +44,16 @@ def daterange(start: date, end: date):
 
     for n in range(days - 1):
         yield start + timedelta(days=n), start + timedelta(days=n+1)
+
+
+def discard_files(files: list[str]) -> None:
+    for file in files:
+        try:
+            os.remove(file)
+        except:
+            pass
+
+
+def get_files(dir: str, pattern: str = '*.csv') -> list[str]:
+    files = glob.glob(os.path.join(dir, pattern))
+    return files

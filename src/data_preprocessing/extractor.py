@@ -1,7 +1,10 @@
 import numpy as np
 import pandas as pd
 from typing import List
+from tqdm import tqdm
 
+
+# TODO: add scaling per ticket
 
 class Data_Extractor:
     def __init__(self,
@@ -26,7 +29,8 @@ class Data_Extractor:
         else:
             df = data.copy(deep=True)
 
-        return np.abs(df['Close'].shift(-self.window_size) - df['Close']) / df['Close']
+        close = df['Close'] if 'Close' in df.columns else df['close']
+        return np.abs(close.shift(-self.window_size) - close) / close
 
 
     def __extract_intervals(self, data: pd.DataFrame, *args, **kwargs) -> np.ndarray:
@@ -41,20 +45,29 @@ class Data_Extractor:
             if start < 0 or end + self.after_session_interval + 1 > data.shape[0]:
                 continue
 
-            session_closes = data['Close'].iloc[start : end].values
+            # TODO: remove KOSTYLY
+            if 'Close' in data.columns:
+                session_closes = data['Close'].iloc[start : end].values
+            else:
+                session_closes = data['close'].iloc[start : end].values
+
             filter = np.mean(self.__calculate_volatility(session_closes, self.window_size))
 
             if filter < (session_vol / self.scaling_factor):
                 chosen_sessions.append(data.iloc[start : end + self.after_session_interval].values)
 
         # drop first column with dates
-        return np.array(chosen_sessions)[:, :, 1:]
+        try:
+            result = np.array(chosen_sessions)[:, :, 1:]
+            return result
+        except:
+            return np.array([])
 
     def extract_data(self, files: List[str], *args, **kwargs) -> str:
 
         extracted = []
 
-        for file in files:
+        for file in tqdm(files):
             data = pd.read_csv(file)
             extracted.extend(self.__extract_intervals(data, self.min_volatility))
 

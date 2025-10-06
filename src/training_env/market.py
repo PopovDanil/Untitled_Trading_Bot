@@ -59,6 +59,6 @@ class Market(gym.Env):
 
         fig.show()
 
-m = Market('/home/danil/Documents/ML/Project/Untitled_Trading_Bot/data/training.csv', initial_cash=0.0)
+m = Market('/home/danil/Documents/ML/Project/Untitled_Trading_Bot/check.csv', initial_cash=0.0)
 m.show_plot()
 

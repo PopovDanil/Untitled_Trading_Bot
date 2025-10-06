@@ -1,5 +1,6 @@
-from data_preprocessing.pipeline import get_data
+from data_preprocessing.pipeline import update_training_dataset, preprocess_dataset
 
 
 if __name__ == '__main__':
-    get_data(period='1m')
+    # update_training_dataset(period='1mo')
+    preprocess_dataset(directory='data/train')
