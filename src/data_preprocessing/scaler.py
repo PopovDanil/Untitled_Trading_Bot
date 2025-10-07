@@ -1,28 +1,33 @@
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
+from .utils import file_exists, join_paths
 import joblib
 
 
 # TODO: add golb to find ready files
 # TODO: Add scaler per future, since the prices are very
 class Data_Scaler:
-    def __init__(self, saving_path: str = 'data/ready/', scaler_name: str = 'Std', use_existing: bool = True):
+    def __init__(self, ticket_name: str, saving_path: str = 'data/ready/', scaler_name: str = 'Std'):
+        self.ticket = ticket_name
         self.saving_path = saving_path
         self.scaler_name = scaler_name
-        self.use_existing = use_existing
+        self.scaler_path = join_paths(self.scalers_path, ticket_name + ".joblib")
+        self.scalers_path = 'data/scalers/'
 
-        if not use_existing:
+        if not file_exists(self.scalers_path, ticket_name + ".joblib"):
+            self.use_existing = False
             self.scaler = {
                 'MinMax': MinMaxScaler(),
                 'Std': StandardScaler()
             }[scaler_name]
         else:
+            self.use_existing = True
             self.scaler = self.__load_scaler()
 
     def __load_scaler(self) -> StandardScaler | MinMaxScaler | None:
         scaler = None
         try:
-            scaler = joblib.load(self.saving_path)
+            scaler = joblib.load(self.scaler_path)
         except Exception as e:
             print(f"Error while loading the scaler: {e}")
 
@@ -30,7 +35,7 @@ class Data_Scaler:
 
     def __fit_scaler_(self, data, *args, **kwargs) -> np.ndarray:
         self.scaler.fit(data)
-        joblib.dump(self.scaler, 'data/scaler/conf.joblib')
+        joblib.dump(self.scaler, self.scaler_path)
 
     def transform(self, data, *args, **kwargs):
         scaled = []
@@ -52,7 +57,7 @@ class Data_Scaler:
             self.__fit_scaler_(data_stacked)
         scaled = self.transform(data)
 
-        file_name = self.saving_path + 'ready.npz'
+        file_name = join_paths(self.saving_path, self.ticket + '.npz')
 
         np.savez(file_name, data=scaled)
 

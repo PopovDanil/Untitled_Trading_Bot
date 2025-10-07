@@ -54,6 +54,7 @@ class Data_Extractor:
             filter = np.mean(self.__calculate_volatility(session_closes, self.window_size))
 
             if filter < (session_vol / self.scaling_factor):
+                print(data.iloc[start : end + self.after_session_interval])
                 chosen_sessions.append(data.iloc[start : end + self.after_session_interval].values)
 
         # drop first column with dates
@@ -78,3 +79,7 @@ class Data_Extractor:
         np.savez(file_name, data=extracted)
 
         return file_name
+
+
+d = Data_Extractor()
+d.extract_data(['/home/danil/Documents/ML/Project/Untitled_Trading_Bot/data/train/TATASTEEL_5minute.csv'])

@@ -57,3 +57,10 @@ def discard_files(files: list[str]) -> None:
 def get_files(dir: str, pattern: str = '*.csv') -> list[str]:
     files = glob.glob(os.path.join(dir, pattern))
     return files
+
+def file_exists(path: str, file: str) -> bool:
+    file = os.path.join(path, file)
+    return os.path.exists(file)
+
+def join_paths(path: str, file: str) -> str:
+    return os.path.join(path, file)
