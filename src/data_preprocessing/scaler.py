@@ -1,20 +1,19 @@
 import numpy as np
+import pandas as pd
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
-from .utils import file_exists, join_paths
+from .utils import file_exists, join_paths, get_files
 import joblib
 
 
-# TODO: add golb to find ready files
-# TODO: Add scaler per future, since the prices are very
 class Data_Scaler:
-    def __init__(self, ticket_name: str, saving_path: str = 'data/ready/', scaler_name: str = 'Std'):
-        self.ticket = ticket_name
+    def __init__(self, ticker: str, saving_path: str = 'data/ready/', scaler_name: str = 'Std'):
+        self.ticker = ticker
         self.saving_path = saving_path
         self.scaler_name = scaler_name
-        self.scaler_path = join_paths(self.scalers_path, ticket_name + ".joblib")
         self.scalers_path = 'data/scalers/'
+        self.scaler_path = join_paths(self.scalers_path, ticker + ".joblib")
 
-        if not file_exists(self.scalers_path, ticket_name + ".joblib"):
+        if not file_exists(self.scalers_path, ticker + ".joblib"):
             self.use_existing = False
             self.scaler = {
                 'MinMax': MinMaxScaler(),
@@ -37,28 +36,40 @@ class Data_Scaler:
         self.scaler.fit(data)
         joblib.dump(self.scaler, self.scaler_path)
 
-    def transform(self, data, *args, **kwargs):
+    def __collect_data(self, path_to_data: str):
+        pattern = self.ticker + "*.csv"
+        self.files = get_files(path_to_data, pattern)
+
+        data = pd.DataFrame()
+        for file in self.files:
+            df = pd.read_csv(file)
+            df = df.drop(columns=['date'])
+            data = pd.concat([data, df], axis=0)
+
+        return data.values
+
+    def __transform(self, data, *args, **kwargs):
         scaled = []
 
-        if len(data.shape) <= 2:
-            return self.scaler.transform(data)
-
-        for idx in range(data.shape[0]):
-            scaled.append(self.scaler.transform(data[idx]))
+        for file in self.files:
+            df = pd.read_csv(file)
+            df = df.drop(columns=['date'])
+            scaled.append(self.scaler.transform(df.values))
 
         return np.array(scaled)
 
     def scale_data(self, path_to_data: str = 'data/extracted/'):
-        data = np.load(path_to_data, allow_pickle=True)['data']
+        data = self.__collect_data(path_to_data)
 
-        data_stacked = np.concat([data[idx] for idx in range(data.shape[0])], axis=0)
+        try:
+            if not self.use_existing:
+                self.__fit_scaler_(data)
+            scaled = self.__transform(data)
 
-        if not self.use_existing:
-            self.__fit_scaler_(data_stacked)
-        scaled = self.transform(data)
+            file_name = join_paths(self.saving_path, self.ticker + '.npz')
 
-        file_name = join_paths(self.saving_path, self.ticket + '.npz')
+            np.savez(file_name, data=scaled)
 
-        np.savez(file_name, data=scaled)
-
-        return file_name
+            return file_name
+        except ValueError as e:
+            print(f'An error occurred: {e}')

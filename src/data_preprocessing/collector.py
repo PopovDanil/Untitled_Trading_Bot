@@ -9,7 +9,6 @@ from typing import Tuple
 # TODO: Fix args for pipeline
 # TODO: Add comments
 
-# TODO: I really need to stick to one stock? If there is only one optimal strategy, so it should be uniform
 # TODO: Split into train/test/validation
 # TODO: Add PER
 
@@ -43,7 +42,6 @@ class Data_Collector:
         self.macd_fast = macd_fast      # MACD
         self.macd_slow = macd_slow      # MACD
         self.macd_signal = macd_signal  # MACD
-        print(self.start, self.end)
 
     # Adjust shapes of main df and additional column
     def __broadcast_data(self, dst: pd.DataFrame, src: pd.DataFrame, column_name: str, *args, **kwargs) -> None:
@@ -197,6 +195,20 @@ class Data_Collector:
 
         return filtered_df
 
+    def __format_df(self, data: pd.DataFrame) -> pd.DataFrame:
+        data = data.reset_index(drop=False)
+        new_data = {
+            'date':   data['Date'],
+            'open':   data['Open'],
+            'high':   data['High'],
+            'low':    data['Low'],
+            'close':  data['Close'],
+            'volume': data['Volume'],
+        }
+
+        new_df = pd.DataFrame(new_data)
+        return new_df
+
     # Main pipeline
     def collect_data(self, *args, **kwargs) -> Tuple[pd.DataFrame, bool]:
         # Collect fresh data from FRED and Yahoo Finance
@@ -214,6 +226,7 @@ class Data_Collector:
 
         # Extract desired period
         cropped = self.__crop_to_desired_dates(data, **kwargs)
+        cropped = self.__format_df(cropped)
 
         # Save
         if not cropped.empty:

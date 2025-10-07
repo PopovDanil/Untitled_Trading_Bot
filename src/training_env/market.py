@@ -41,11 +41,11 @@ class Market(gym.Env):
         fig = go.Figure(
             data=[
                 go.Candlestick(
-                    x=self.data['Date'],
-                    open=self.data['Open'],
-                    high=self.data['High'],
-                    low=self.data['Low'],
-                    close=self.data['Close']
+                    x=self.data['date'],
+                    open=self.data['open'],
+                    high=self.data['high'],
+                    low=self.data['low'],
+                    close=self.data['close']
                 )
             ]
         )
@@ -59,6 +59,6 @@ class Market(gym.Env):
 
         fig.show()
 
-m = Market('/home/danil/Documents/ML/Project/Untitled_Trading_Bot/check.csv', initial_cash=0.0)
+m = Market('/home/danil/Documents/ML/Project/Untitled_Trading_Bot/data/extracted/tatasteel_session289.csv', initial_cash=0.0)
 m.show_plot()
 

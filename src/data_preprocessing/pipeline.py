@@ -1,10 +1,7 @@
 from .collector import Data_Collector
 from .extractor import Data_Extractor
 from .scaler import Data_Scaler
-from .utils import get_past_datetime, daterange, discard_files, get_files
-
-
-# TODO: Add scaler per stock
+from .utils import get_past_datetime, daterange, discard_files, get_files, extract_ticker_name
 
 
 futures_tickers = [
@@ -26,23 +23,24 @@ futures_tickers = [
 ]
 
 
-def update_training_dataset(period: str = '1mo') -> str:
+def update_training_dataset(period: str = '1mo') -> None:
     # Get dates for data collection
     start, end = get_past_datetime(period=period)
 
-    # Initialize perprocessers
-    extractor = Data_Extractor()
-    scaler = Data_Scaler(use_existing=False)
-
-    collected_data_files = []
-
     # Collect futures
-    for ticket in futures_tickers:
+    for ticker in futures_tickers:
+
+        # Initialize perprocessers
+        extractor = Data_Extractor(min_volatility=0.03, scaling_factor=1.5)
+        scaler = Data_Scaler(ticker=ticker)
+
+        collected_data_files = []
+
         for date_s, date_e in daterange(start, end):
-            file_name = f'data/raw/{str(date_s)}-{str(date_e)}_{ticket}.csv'
+            file_name = f'data/raw/{ticker}_{str(date_s)}-{str(date_e)}.csv'
 
             try:
-                collector = Data_Collector(file_save_to=file_name, stock_name=ticket, start=date_s, end=date_e)
+                collector = Data_Collector(file_save_to=file_name, stock_name=ticker, start=date_s, end=date_e)
                 _, empty = collector.collect_data()
 
                 if not empty: collected_data_files.append(file_name)
@@ -50,28 +48,25 @@ def update_training_dataset(period: str = '1mo') -> str:
                 # TODO: add something
                 pass
 
-    file = extractor.extract_data(files=collected_data_files)
-    file = scaler.scale_data(file)
+        extractor.extract_data(files=collected_data_files)
+        scaler.scale_data(extractor.saving_path)
 
-    # Clean the raw data storage
-    discard_files(collected_data_files)
+        # Clean the raw data storage
+        discard_files(collected_data_files)
 
-    print(f'Your beautiful data is ready! You can find it here: {file}')
+    print('Your beautiful data is ready!')
 
-    return file
 
 # cut first n rows in the list, and add fresh
 def merge_new_and_old():
     pass
 
 
-def preprocess_dataset(directory: str = 'data') -> str:
-    extractor = Data_Extractor()
-    scaler = Data_Scaler(use_existing=False)
+def preprocess_dataset(directory: str = 'data/train') -> None:
+    files = get_files(dir=directory)
 
-    files = get_files(dir=directory)[:5]
-
-    file = extractor.extract_data(files=files)
-    scaler.scale_data(file)
-
-    return file
+    for file in files:
+        extractor = Data_Extractor(min_volatility=0.06, scaling_factor=5.0)
+        scaler = Data_Scaler(ticker=extract_ticker_name(file))
+        extractor.extract_data(files=[file])
+        scaler.scale_data(extractor.saving_path)

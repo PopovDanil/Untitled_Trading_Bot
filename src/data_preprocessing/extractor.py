@@ -2,9 +2,8 @@ import numpy as np
 import pandas as pd
 from typing import List
 from tqdm import tqdm
+from .utils import join_paths, extract_ticker_name, get_files
 
-
-# TODO: add scaling per ticket
 
 class Data_Extractor:
     def __init__(self,
@@ -33,7 +32,7 @@ class Data_Extractor:
         return np.abs(close.shift(-self.window_size) - close) / close
 
 
-    def __extract_intervals(self, data: pd.DataFrame, *args, **kwargs) -> np.ndarray:
+    def __extract_intervals(self, data: pd.DataFrame, ticker: str, *args, **kwargs) -> None:
         chosen_sessions = []
 
         volatility = self.__calculate_volatility(data, self.window_size)
@@ -54,32 +53,16 @@ class Data_Extractor:
             filter = np.mean(self.__calculate_volatility(session_closes, self.window_size))
 
             if filter < (session_vol / self.scaling_factor):
-                print(data.iloc[start : end + self.after_session_interval])
-                chosen_sessions.append(data.iloc[start : end + self.after_session_interval].values)
+                chosen_sessions.append(data.iloc[start : end + self.after_session_interval])
 
-        # drop first column with dates
-        try:
-            result = np.array(chosen_sessions)[:, :, 1:]
-            return result
-        except:
-            return np.array([])
+        for idx, session in enumerate(chosen_sessions):
+            if not session.empty:
+                path = join_paths(self.saving_path, f'{ticker}_session{idx + 1}.csv')
+                session.to_csv(path)
 
-    def extract_data(self, files: List[str], *args, **kwargs) -> str:
-
-        extracted = []
+    def extract_data(self, files: List[str], *args, **kwargs) -> None:
 
         for file in tqdm(files):
             data = pd.read_csv(file)
-            extracted.extend(self.__extract_intervals(data, self.min_volatility))
-
-        extracted = np.array(extracted)
-
-        file_name = self.saving_path + 'extracted.npz'
-
-        np.savez(file_name, data=extracted)
-
-        return file_name
-
-
-d = Data_Extractor()
-d.extract_data(['/home/danil/Documents/ML/Project/Untitled_Trading_Bot/data/train/TATASTEEL_5minute.csv'])
+            ticker = extract_ticker_name(file)
+            self.__extract_intervals(data, ticker, self.min_volatility)

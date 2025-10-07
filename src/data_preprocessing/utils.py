@@ -64,3 +64,7 @@ def file_exists(path: str, file: str) -> bool:
 
 def join_paths(path: str, file: str) -> str:
     return os.path.join(path, file)
+
+def extract_ticker_name(name: str) -> str:
+    file_name = name.split('/')[-1]
+    return file_name.split('_')[0].lower().strip()
