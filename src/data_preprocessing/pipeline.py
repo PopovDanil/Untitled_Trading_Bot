@@ -1,7 +1,8 @@
 from .collector import Data_Collector
 from .extractor import Data_Extractor
 from .scaler import Data_Scaler
-from .utils import get_past_datetime, daterange, discard_files, get_files, extract_ticker_name
+from .utils import get_past_datetime, daterange, discard_files, get_files, extract_ticker_name, join_paths
+import numpy as np
 
 
 futures_tickers = [
@@ -21,6 +22,23 @@ futures_tickers = [
     "HG=F",   # Copper Futures
     "PA=F",   # Palladium Futures
 ]
+
+def compress_to_one(path: str, on_delete: bool = False) -> None:
+    files = get_files(path, pattern='*.npz')
+    result = None
+
+    for file in files:
+        arr = np.load(file, allow_pickle=True)['data']
+
+        if result is None:
+            result = arr
+        else:
+            result = np.vstack([result, arr])
+
+    if on_delete:
+        discard_files(files)
+
+    np.savez(join_paths(path, 'ready'), data=result)
 
 
 def update_training_dataset(period: str = '1mo') -> None:
