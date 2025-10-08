@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
-from .utils import file_exists, join_paths, get_files
+from utils import file_exists, join_paths, get_files
 import joblib
 
 
@@ -52,7 +52,7 @@ class Data_Scaler:
         scaled = []
 
         for file in self.files:
-            df = pd.read_csv(file)
+            df = pd.read_csv(file, index_col=0)
             df = df.drop(columns=['date'])
             scaled.append(self.scaler.transform(df.values))
 
@@ -73,3 +73,6 @@ class Data_Scaler:
             return file_name
         except ValueError as e:
             print(f'An error occurred: {e}')
+
+d = Data_Scaler(ticker='zyduslife_session122', saving_path='data')
+d.scale_data()
