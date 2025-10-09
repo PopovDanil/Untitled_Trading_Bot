@@ -67,7 +67,7 @@ def update_training_dataset(period: str = '1mo') -> None:
                 pass
 
         extractor.extract_data(files=collected_data_files)
-        scaler.scale_data(extractor.saving_path)
+        scaler.scale_data(path_to_data=extractor.saving_path)
 
         # Clean the raw data storage
         discard_files(collected_data_files)
@@ -87,4 +87,4 @@ def preprocess_dataset(directory: str = 'data/train') -> None:
         extractor = Data_Extractor(min_volatility=0.06, scaling_factor=5.0)
         scaler = Data_Scaler(ticker=extract_ticker_name(file))
         extractor.extract_data(files=[file])
-        scaler.scale_data(extractor.saving_path)
+        scaler.scale_data(path_to_data=extractor.saving_path)

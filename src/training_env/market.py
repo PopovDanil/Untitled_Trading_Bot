@@ -3,29 +3,40 @@ import gymnasium as gym
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-
+from typing import Tuple
 
 class Market(gym.Env):
-    def __init__(self, path_to_training_data: str, initial_cash: np.float32):
+    def __init__(self, path_to_training_data: str, initial_cash: np.float32, slippage: np.float32, broker_fee: np.float32):
         super().__init__()
 
         self.path_to_data = path_to_training_data
         self.data = pd.read_csv(path_to_training_data)
+        # observations - open,high,low,close,volume
 
-        # open, high, low, close, volume
-        self.observation_space = spaces.Box(low=float('-inf'), high=float('inf'), shape=self.data.shape[1]+2, dtype=np.float32)
-        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
+        # open, high, low, close, volume + additional, + position, current_step, remaining_time
+        self.observation_space = spaces.Box(low=float('-inf'), high=float('inf'), shape=self.data.shape[1] + 3, dtype=np.float32)
 
-    def step(self, action: float):
-        # action -> float [-1, 1]
-        # return - data[i]
+        # go long - >0, short - <0, hold = 0, value - amount of current cash/futures to spend, second - 0 - wait, 1 - close position
+        self.action_space = spaces.Tuple([
+            spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32),
+            spaces.Discrete(2)
+        ])
 
-        # Ides:
-        # For selling
-        # 1. Check previous and future prices to give immediate reward
-        # 2. For the first one - add the same price, for the last - give
-        #
-        pass
+        self.cash = initial_cash
+        self.pnl = 0.0
+
+        self.slippage = slippage
+        self.fee = broker_fee
+
+        self.position = 0 # 0 - waiting, 1 - long, -1 - short
+        self.entry_price = 0.0
+
+        self.current_price = data[]
+        self.current_step = 0
+
+    def step(self, action: Tuple):
+        # action - [float, int]
+
 
     def reset(self, seed: int):
         pass

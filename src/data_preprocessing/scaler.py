@@ -1,8 +1,9 @@
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
-from utils import file_exists, join_paths, get_files
+from .utils import file_exists, join_paths, get_files
 import joblib
+from uuid import uuid4
 
 
 class Data_Scaler:
@@ -12,6 +13,7 @@ class Data_Scaler:
         self.scaler_name = scaler_name
         self.scalers_path = 'data/scalers/'
         self.scaler_path = join_paths(self.scalers_path, ticker + ".joblib")
+        self.files = None
 
         if not file_exists(self.scalers_path, ticker + ".joblib"):
             self.use_existing = False
@@ -42,37 +44,40 @@ class Data_Scaler:
 
         data = pd.DataFrame()
         for file in self.files:
-            df = pd.read_csv(file)
-            df = df.drop(columns=['date'])
+            df = pd.read_csv(file, index_col=0).drop(columns=['date'])
             data = pd.concat([data, df], axis=0)
 
         return data.values
 
-    def __transform(self, data, *args, **kwargs):
-        scaled = []
+    def __transform(self, to_transform: pd.DataFrame | pd.Series = None, save: bool = True) -> np.ndarray | None:
+
+        read_files = True
+        to_return = None
+        if self.files is None:
+            read_files = False
+            self.files = [to_transform]
 
         for file in self.files:
-            df = pd.read_csv(file, index_col=0)
-            df = df.drop(columns=['date'])
-            scaled.append(self.scaler.transform(df.values))
+            df = pd.read_csv(file, index_col=0).drop(columns=['date']) if read_files else file
+            data = self.scaler.transform(df.values)
+            print(data)
+            data = pd.DataFrame(data=data, columns=df.columns)
 
-        return np.array(scaled)
+            if save:
+                file_to_save = join_paths(self.saving_path, f'{self.ticker}_{str(uuid4())}.csv')
+                data.to_csv(file_to_save)
+            to_return = data
 
-    def scale_data(self, path_to_data: str = 'data/extracted/'):
-        data = self.__collect_data(path_to_data)
+        return  to_return
+
+    def scale_data(self, df: pd.DataFrame | pd.Series = None, path_to_data: str = 'data/extracted/', save: bool = True) -> None | np.ndarray:
+        data = self.__collect_data(path_to_data) if df is None else df
 
         try:
             if not self.use_existing:
                 self.__fit_scaler_(data)
-            scaled = self.__transform(data)
+            scaled = self.__transform(data, save)
 
-            file_name = join_paths(self.saving_path, self.ticker + '.npz')
-
-            np.savez(file_name, data=scaled)
-
-            return file_name
+            return scaled
         except ValueError as e:
             print(f'An error occurred: {e}')
-
-d = Data_Scaler(ticker='zyduslife_session122', saving_path='data')
-d.scale_data()
