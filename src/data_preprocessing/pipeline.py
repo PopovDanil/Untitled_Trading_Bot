@@ -1,9 +1,16 @@
+import numpy as np
+
 from .collector import Data_Collector
 from .extractor import Data_Extractor
 from .scaler import Data_Scaler
-from .utils import get_past_datetime, daterange, discard_files, get_files, extract_ticker_name, join_paths
-import numpy as np
-
+from .utils import (
+    daterange,
+    discard_files,
+    extract_ticker_name,
+    get_files,
+    get_past_datetime,
+    join_paths,
+)
 
 futures_tickers = [
     "ES=F",   # E-Mini S&P 500
@@ -25,12 +32,12 @@ futures_tickers = [
 
 def compress_to_one(path: str, on_delete: bool = False) -> None:
     files = get_files(path, pattern='*.npz')
-    result = None
+    result = []
 
     for file in files:
         arr = np.load(file, allow_pickle=True)['data']
 
-        if result is None:
+        if result == []:
             result = arr
         else:
             result = np.vstack([result, arr])
@@ -62,7 +69,7 @@ def update_training_dataset(period: str = '1mo') -> None:
                 _, empty = collector.collect_data()
 
                 if not empty: collected_data_files.append(file_name)
-            except Exception as e:
+            except Exception:
                 # TODO: add something
                 pass
 

@@ -1,7 +1,8 @@
-import tensorflow as tf
+from typing import List, Tuple
+
 import keras
-from typing import Tuple, List
 import numpy as np
+import tensorflow as tf
 
 
 class MLP:

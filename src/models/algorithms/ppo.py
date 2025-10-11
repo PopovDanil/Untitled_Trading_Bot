@@ -1,10 +1,12 @@
-import tensorflow as tf
-from  tqdm import tqdm
-import keras
-import numpy as np
+from typing import List, Tuple
+
 import gymnasium as gym
 import matplotlib.pyplot as plt
-from typing import Tuple, List
+import numpy as np
+import tensorflow as tf
+from matplotlib.pylab import ArrayLike
+from tqdm import tqdm
+
 from ..neural_networks.mlp import MLP
 
 
@@ -42,7 +44,7 @@ class PPOAgent:
         self.actor.model.save(save_path + '/ppo/actor.keras')
         self.critic.model.save(save_path + '/ppo/critic.keras')
 
-    def act(self, observation: np.ndarray | tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor | float, tf.Tensor]:
+    def act(self, observation: np.ndarray | tf.Tensor) -> Tuple[tf.Tensor, ArrayLike | float, tf.Tensor]:
         logits = self.actor.forward(np.atleast_2d(observation))
         action = tf.squeeze(tf.random.categorical(logits, 1)).numpy()
         value = tf.squeeze(self.critic.forward(np.atleast_2d(observation)))

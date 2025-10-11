@@ -1,8 +1,10 @@
+from typing import List
+
 import numpy as np
 import pandas as pd
-from typing import List
 from tqdm import tqdm
-from .utils import join_paths, extract_ticker_name, get_files
+
+from .utils import extract_ticker_name, join_paths
 
 
 class Data_Extractor:
@@ -21,7 +23,7 @@ class Data_Extractor:
         self.min_volatility = min_volatility
         self.scaling_factor = scaling_factor
 
-    def __calculate_volatility(self, data, *args, **kwargs) -> pd.Series:
+    def __calculate_volatility(self, data, *args, **kwargs) -> pd.Series | np.ndarray:
 
         if isinstance(data, np.ndarray):
             df = pd.DataFrame({'Close': data.copy()})

@@ -1,9 +1,11 @@
+from uuid import uuid4
+
+import joblib
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
-from .utils import file_exists, join_paths, get_files
-import joblib
-from uuid import uuid4
+
+from .utils import file_exists, get_files, join_paths
 
 
 class Data_Scaler:
@@ -59,9 +61,10 @@ class Data_Scaler:
 
         for file in self.files:
             df = pd.read_csv(file, index_col=0).drop(columns=['date']) if read_files else file
+
             data = self.scaler.transform(df.values)
-            print(data)
             data = pd.DataFrame(data=data, columns=df.columns)
+            data['close_raw'] = df['close'].values
 
             if save:
                 file_to_save = join_paths(self.saving_path, f'{self.ticker}_{str(uuid4())}.csv')

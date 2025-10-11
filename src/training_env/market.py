@@ -1,10 +1,10 @@
-from gymnasium import spaces
-import gymnasium as gym
-import pandas as pd
-import numpy as np
-import plotly.graph_objects as go
-from typing import Tuple, List
 import random
+from typing import List, SupportsFloat, Tuple
+
+import gymnasium as gym
+import numpy as np
+import pandas as pd
+from gymnasium import spaces
 
 
 class Market(gym.Env):
@@ -16,7 +16,7 @@ class Market(gym.Env):
         self._get_observations(files=training_files)
 
         # open, high, low, close, volume, position, current_step, remaining_time, cash
-        self.observation_space = spaces.Box(low=float('-inf'), high=float('inf'), shape=self.observation_shape + 4, dtype=np.float32)
+        self.observation_space = spaces.Box(low=float('-inf'), high=float('inf'), shape=(self.observation_shape + 4,), dtype=np.float32)
 
         # go long - >0, short - <0, hold = 0, value - amount of current cash/futures to spend, second - 0 - wait, 1 - close position
         self.action_space = spaces.Tuple([
@@ -45,15 +45,20 @@ class Market(gym.Env):
     def _reorder_obs(self):
         random.shuffle(self.observations)
 
-    def _get_observations(self, files: List[str]) -> List[pd.DataFrame]:
+    def _get_observations(self, files: List[str]):
         self.observations = []
         for file in files:
             data = pd.read_csv(file, index_col=0)
             self.observations.append(data)
 
-        self.observation_shape = self.observations[0].shape[1]
+        # exclude close_raw
+        self.observation_shape = self.observations[0].shape[1] - 1
         self.episode_len = self.observations[0].shape[0]
         self.num_episodes = len(self.observations)
+
+        # exclude close_raw
+        self.data_columns = self.observations[0].columns.to_list()
+        self.data_columns.remove('close_raw')
 
     def _get_next_obs(self) -> Tuple[np.ndarray, bool]:
         previous = self.current_step
@@ -61,7 +66,6 @@ class Market(gym.Env):
         self.current_step = (self.current_step + 1) % self.episode_len
 
         done = False
-        current_step = 0
         remaining_steps = 0
         position = self.position
 
@@ -75,14 +79,17 @@ class Market(gym.Env):
                 self._reorder_obs()
                 self.current_episode = 0
         else:
-            current_step = current_step
-            remaining_steps = self.episode_len - current_step
-            obs = self.observations[self.current_episode].loc[self.current_step].values
+            remaining_steps = self.episode_len - self.current_step
+            obs = self.observations[self.current_episode].loc[self.current_step, self.data_columns].values
 
-        obs = np.hstack([obs, np.array([position, current_step, remaining_steps])])
+        # Normalize them
+        norm_step = self.current_step / self.episode_len
+        norm_remaining = remaining_steps / self.episode_len
+
+        obs = np.hstack([obs, np.array([position, norm_step, norm_remaining])])
         return obs, done
 
-    def step(self, action: Tuple) -> Tuple[np.ndarray, np.float32, bool, bool, dict]:
+    def step(self, action: Tuple) -> Tuple[np.ndarray, SupportsFloat, bool, bool, dict]:
 
         pnl = 0.0
         ratio, close = action
@@ -91,9 +98,9 @@ class Market(gym.Env):
         if done: close = True
 
         # third element - close
-        self.current_price = current_obs[3]
+        self.current_price = self.observations[self.current_episode].iloc[self.current_step]['close_raw']
 
-        reward = (self.position * (self.current_price - self.previous_price)) / self.cash
+        reward = (self.position * (self.current_price - self.previous_price)) / self.initial_cash
         truncated = False
         terminated = False
         info = {}
@@ -141,10 +148,13 @@ class Market(gym.Env):
             if self.cash == 0:
                 reward -= 2
 
-        current_obs = np.hstack([current_obs, np.array([self.cash])]) # CASH WAS ADDED
+        # Update the price
+        self.previous_price = self.current_price
+
+        current_obs = np.hstack([current_obs, np.array([self.cash / self.initial_cash])]) # Normalized cash was added
         return current_obs, reward, truncated, terminated, info
 
-    def reset(self, *args, **kwargs) -> np.ndarray:
+    def reset(self, *args, **kwargs) -> Tuple[np.ndarray, dict]:
         self.cash = self.initial_cash
         self.pnl = 0.0
         self.qty = 0.0
@@ -156,33 +166,7 @@ class Market(gym.Env):
         if done:
             obs, _ = self._get_next_obs()
 
-        self.current_price = self.observations[self.current_episode].iloc[0]['close']
+        self.current_price = self.observations[self.current_episode].iloc[0]['close_raw']
         self.previous_price = self.current_price
 
-        return obs
-
-    # def show_plot(self) -> None:
-    #     fig = go.Figure(
-    #         data=[
-    #             go.Candlestick(
-    #                 x=data['date'],
-    #                 open=data['open'],
-    #                 high=data['high'],
-    #                 low=data['low'],
-    #                 close=data['close']
-    #             )
-    #         ]
-    #     )
-
-    #     fig.update_layout(
-    #         title='Standardized price',
-    #         xaxis_title='Date',
-    #         yaxis_title='Price',
-    #         xaxis_rangeslider_visible=False
-    #     )
-
-    #     fig.show()
-
-# m = Market('/home/danil/Documents/ML/Project/Untitled_Trading_Bot/data/extracted/tatasteel_session289.csv', initial_cash=0.0)
-# m.show_plot()
-
+        return obs, {}
