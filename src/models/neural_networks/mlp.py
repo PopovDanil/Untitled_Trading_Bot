@@ -16,7 +16,8 @@ class MLP:
         outputs = keras.layers.Dense(output_shape, activation='linear', kernel_initializer='he_uniform')(x)
 
         self.model = keras.Model(inputs=inputs, outputs=outputs)
-        self.optimizer = keras.optimizers.Adam(learning_rate=lr) # type: ignore
+        self.optimizer = keras.optimizers.Adam(learning_rate=lr, global_clipnorm=0.5) # type: ignore
 
     def forward(self, x: List | np.ndarray | tf.Tensor) -> tf.Tensor:
-        return self.model(x)
+        output = self.model(x)
+        return output

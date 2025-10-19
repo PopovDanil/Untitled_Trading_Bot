@@ -4,17 +4,17 @@ import gymnasium as gym
 import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
-from matplotlib.pylab import ArrayLike
 from tqdm import tqdm
 
-from ..neural_networks.mlp import MLP
+from ..neural_networks.lstm import LSTM
 
 
 class PPOAgent:
     def __init__(
             self, observation_shape: int,
             num_actions: int,
-            hidden_shapes: Tuple = (64, 64),
+            cont_actions: int,
+            hidden_size: int = 10,
             actor_lr: float | np.float32 = 1e-4,
             critic_lr: float | np.float32 = 5e-4,
             advantage_type: str = 'gae',
@@ -25,30 +25,97 @@ class PPOAgent:
             c1: float | np.float32 = 0.05,
             c2: float | np.float32 = 0.01
         ):
+
         self.opt_epochs = opt_epochs
         self.clip_ratio = clip_ratio
         self.num_actions = num_actions
+        self.cont_actions = cont_actions
         self.advantage_type = advantage_type
 
         self.actor_lr = actor_lr
         self.critic_lr = critic_lr
-        self.actor = MLP(observation_shape=observation_shape, output_shape=num_actions, hidden_shapes=hidden_shapes, lr=actor_lr)
-        self.critic = MLP(observation_shape=observation_shape, output_shape=1, hidden_shapes=hidden_shapes, lr=critic_lr)
+        self.actor_cont = LSTM(observation_shape=1, output_shape=2*cont_actions, hidden_size=hidden_size, lr=actor_lr)
+        self.actor_disc = LSTM(observation_shape=1, output_shape=num_actions, hidden_size=hidden_size, lr=actor_lr)
+        self.critic = LSTM(observation_shape=1, output_shape=1, hidden_size=hidden_size, lr=critic_lr)
 
         self.c1 = c1
         self.c2 = c2
         self.lam = lam
         self.gamma = gamma
 
-    def save(self, save_path: str = 'models_params') -> None:
-        self.actor.model.save(save_path + '/ppo/actor.keras')
-        self.critic.model.save(save_path + '/ppo/critic.keras')
+        self.EPS = 1e-5
+        self.LOG_STD_MIN = -10.0
+        self.LOG_STD_MAX = 2.0
 
-    def act(self, observation: np.ndarray | tf.Tensor) -> Tuple[tf.Tensor, ArrayLike | float, tf.Tensor]:
-        logits = self.actor.forward(np.atleast_2d(observation))
-        action = tf.squeeze(tf.random.categorical(logits, 1)).numpy()
+    def save(self, save_path: str = 'models_params') -> None:
+        self.actor_cont.save(save_path + '/ppo/actor_cont.keras')
+        self.actor_disc.save(save_path + '/ppo/actor_disc.keras')
+        self.critic.save(save_path + '/ppo/critic.keras')
+
+    def act(self, observation: np.ndarray | tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
+        logits_disc = self.actor_disc.forward(np.atleast_2d(observation))
+
+        action_disc = tf.squeeze(tf.random.categorical(logits_disc, 1)).numpy()
+
+        action_cont, cont_log_probs, _, _ = self.compute_cont_action(observations=observation)
+        action_cont = action_cont.numpy()
+
         value = tf.squeeze(self.critic.forward(np.atleast_2d(observation)))
-        return logits, action, value
+
+        return cont_log_probs, logits_disc, action_cont, action_disc, value
+
+    def compute_cont_log_probs(self, actions: np.ndarray | tf.Tensor, mean: tf.Tensor, log_std: tf.Tensor) -> tf.Tensor:
+
+        actions = tf.reshape(actions, shape=(actions.shape[0], 1))
+        log_std_clipped = tf.clip_by_value(log_std, self.LOG_STD_MIN, self.LOG_STD_MAX)
+
+        std = tf.math.exp(log_std) + self.EPS
+
+        actions_clipped = tf.clip_by_value(actions, -1.0 + self.EPS, 1.0 - self.EPS)
+
+        u = tf.math.atanh(actions_clipped)
+
+        quad = ((u - mean) ** 2) / (std ** 2) + self.EPS
+
+        cont_log_probs = -0.5 * tf.reduce_sum(quad + 2.0 * log_std_clipped + tf.math.log(2 * np.pi), axis=1, keepdims=True)
+
+        jacobian = tf.math.log(1.0 - actions_clipped ** 2 + self.EPS)
+
+        cont_log_probs = cont_log_probs - jacobian
+        # if any([np.isnan(i) for i in cont_log_probs.numpy()]):
+        #     print('#################### NAN IN LOG PROB ############################')
+        #     print('weights', self.actor_cont.model.get_weights())
+        #     print('actions', actions.shape, actions)
+        #     print('mean', mean.shape, mean)
+        #     print('log_std', log_std.shape, log_std)
+        #     print('actions_clipped', actions_clipped.shape, actions_clipped)
+        #     print('u', u.shape, u)
+        #     print('quad', quad.shape, quad)
+        #     print('cont_log_probs', cont_log_probs.shape, cont_log_probs)
+        #     print('jacobian', jacobian.shape, jacobian)
+        #     print('cont_log_probs', cont_log_probs.shape, cont_log_probs)
+
+        return cont_log_probs
+
+    def compute_cont_action(self, observations: np.ndarray) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
+        cont_out = self.actor_cont.forward(np.atleast_2d(observations))
+        tf.debugging.check_numerics(cont_out, message='NaNs were detected in compute_cont_action')
+
+        mean, log_std = tf.split(cont_out, 2, axis=1)
+        log_std = tf.clip_by_value(log_std, self.LOG_STD_MIN, self.LOG_STD_MAX)
+        std = tf.math.exp(log_std) + self.EPS
+
+        z = tf.random.normal(shape=(self.cont_actions,))
+        u = mean + std * z
+
+        action_cont = tf.squeeze(tf.tanh(u))
+
+        cont_log_probs = -0.5 * tf.reduce_sum((z ** 2) + 2.0 * log_std + tf.math.log(2 * np.pi), axis=1, keepdims=True)
+        jacobian = tf.math.log(1.0 - action_cont ** 2 + self.EPS)
+        cont_log_probs = cont_log_probs - jacobian
+        tf.debugging.check_numerics(cont_log_probs, message='NaNs were detected in compute_cont_action')
+
+        return action_cont, cont_log_probs, mean, std
 
     def discount_reward(self, rewards: tf.Tensor, dones: tf.Tensor, gamma: float | np.float32 = 0.99) -> tf.Tensor:
         result = []
@@ -62,18 +129,20 @@ class PPOAgent:
             discounted_sum = reward + gamma * discounted_sum
             result.append(discounted_sum)
 
-        return tf.convert_to_tensor(result[::-1], dtype=tf.float32)
+        result = tf.convert_to_tensor(result[::-1], dtype=tf.float32)
+
+        return result
 
     def standardize(self, values) -> tf.Tensor:
         return (values - tf.reduce_mean(values)) / (tf.math.reduce_std(values) + 1e-8)
 
     def simple_advantages(self, returns, values) -> tf.Tensor:
-        advantages = returns - values # type: ignore
+        advantages = returns - values
         return self.standardize(advantages)
 
     def gae_advantages(self, rewards, values, dones, states) -> tf.Tensor:
         T = rewards.shape[0]
-        advantages = np.zeros(T, dtype=np.float32) # type: ignore
+        advantages = np.zeros(T, dtype=np.float32)
         gae = .0
 
         next_value = .0
@@ -87,59 +156,135 @@ class PPOAgent:
             advantages[t] = gae
 
         advantages = tf.constant(advantages)
-        return self.standardize(advantages)
+        advantages = self.standardize(advantages)
+
+        return advantages
 
     def get_advantages(self, rewards, values, dones, states) -> tf.Tensor:
         if self.advantage_type == 'simple':
             return self.simple_advantages(rewards, values)
         return self.gae_advantages(rewards, values, dones, states)
 
-    def _compute_loss(self, new_logits, old_logits, actions, values, returns, advantages):
-        actions_one_hot = tf.one_hot(actions, self.num_actions, dtype=tf.float32)
+    def _compute_loss(self, new_log_probs, old_log_probs, new_logits_disc, old_logits_disc, log_std_new, actions_disc, values, returns, advantages):
+        # print('new_log_probs', new_log_probs.shape)
+        # print('old_log_probs', old_log_probs.shape)
+        # print('log_std_new', log_std_new.shape)
 
-        new_policy = tf.nn.softmax(new_logits)
-        old_policy = tf.nn.softmax(old_logits)
+        actions_one_hot = tf.one_hot(actions_disc, self.num_actions, dtype=tf.float32)
+        # print('one hot shape', actions_one_hot.shape)
+        new_policy_disc = tf.nn.softmax(new_logits_disc)
+        old_policy_disc = tf.nn.softmax(old_logits_disc)
+        # print('new_policy_disc shape', new_policy_disc.shape)
+        # print('old_policy_disc shape', old_policy_disc.shape)
 
-        new_action_porbs = tf.reduce_sum(actions_one_hot * new_policy, axis=1)
-        old_action_porbs = tf.reduce_sum(actions_one_hot * old_policy, axis=1)
+        new_action_porbs_disc = tf.reduce_sum(actions_one_hot * new_policy_disc, axis=1)
+        old_action_porbs_disc = tf.reduce_sum(actions_one_hot * old_policy_disc, axis=1)
+        # print('new_action_porbs_disc shape', new_action_porbs_disc.shape)
+        # print('old_action_porbs_disc shape', old_action_porbs_disc.shape)
 
-        ratio = tf.exp(tf.math.log(new_action_porbs + 1e-10) - tf.math.log(old_action_porbs + 1e-10))
-        clipped = tf.clip_by_value(ratio, 1 - self.clip_ratio, 1 + self.clip_ratio)
+        ratio_disc = tf.exp(tf.math.log(new_action_porbs_disc + 1e-10) - tf.math.log(old_action_porbs_disc + 1e-10))
+        # print('ratio_disc shape', ratio_disc.shape)
 
-        policy_loss = -tf.reduce_mean(tf.minimum(ratio * advantages, clipped * advantages))
+        ratio_cont = tf.exp(new_log_probs - old_log_probs)
+        ratio_cont = tf.squeeze(ratio_cont)
+        # print('ratio_cont shape', ratio_cont.shape)
+
+        clipped_disc = tf.clip_by_value(ratio_disc, 1 - self.clip_ratio, 1 + self.clip_ratio)
+        # print('clipped_disc shape', clipped_disc.shape)
+        clipped_cont = tf.clip_by_value(ratio_cont, 1 - self.clip_ratio, 1 + self.clip_ratio)
+        # print('clipped_cont shape', clipped_cont.shape)
+
+        policy_loss_disc = -tf.reduce_mean(tf.minimum(ratio_disc * advantages, clipped_disc * advantages))
+        # print('policy_loss_disc shape', policy_loss_disc.shape)
+        policy_loss_cont = -tf.reduce_mean(tf.minimum(ratio_cont * advantages, clipped_cont * advantages))
+        # print('policy_loss_cont shape', policy_loss_cont.shape)
+
         value_loss = tf.reduce_mean(tf.square(returns - values))
 
-        entropy_bonus = -tf.reduce_mean(tf.reduce_sum(new_policy * tf.math.log(new_policy + 1e-10), axis=1)) # type: ignore
+        entropy_bonus_disc = -tf.reduce_mean(tf.reduce_sum(new_policy_disc * tf.math.log(new_policy_disc + 1e-10), axis=1))
+        # print('entropy_bonus_disc shape', entropy_bonus_disc.shape)
+        entropy_bonus_cont = -tf.reduce_mean(tf.reduce_sum(log_std_new + 0.5 * np.log(2 * np.pi * np.e), axis=1))
+        # print('entropy_bonus_cont shape', entropy_bonus_cont.shape)
 
-        objective = -policy_loss + self.c1 * value_loss + self.c2 * entropy_bonus
-        actor_loss = policy_loss - self.c2 * entropy_bonus
+        objective = -policy_loss_cont - policy_loss_disc + self.c1 * value_loss + self.c2 * (entropy_bonus_disc + entropy_bonus_cont)
 
-        return objective, actor_loss, value_loss
+        disc_actor_loss = policy_loss_disc - self.c2 * entropy_bonus_disc
+        cont_actor_loss = policy_loss_cont - self.c2 * entropy_bonus_cont
 
-    def update(self, states: tf.Tensor, actions: tf.Tensor, old_logits: tf.Tensor, values: tf.Tensor, rewards: tf.Tensor, dones: tf.Tensor) -> List[float]:
+        # if np.isnan(objective.numpy()) or np.isnan(cont_actor_loss.numpy()):
+        #     print('new_log_probs', new_log_probs.shape, new_log_probs)
+        #     print('old_log_probs', old_log_probs.shape, old_log_probs)
+        #     print('log_std_new', log_std_new.shape, log_std_new)
+        #     print('ratio_cont shape', ratio_cont.shape, ratio_cont)
+        #     print('clipped_cont shape', clipped_cont.shape, clipped_cont)
+        #     print('policy_loss_cont shape', policy_loss_cont.shape, policy_loss_cont)
+        #     print('entropy_bonus_cont shape', entropy_bonus_cont.shape, entropy_bonus_cont)
+        #     print('weights', self.actor_cont.model.get_weights())
+        return objective, cont_actor_loss, disc_actor_loss, value_loss
+
+    def update(
+        self,
+        states: tf.Tensor,
+        actions_cont: tf.Tensor,
+        actions_disc: tf.Tensor,
+        old_log_probs: tf.Tensor,
+        old_logits: tf.Tensor,
+        values: tf.Tensor,
+        rewards: tf.Tensor,
+        dones: tf.Tensor
+    ) -> List[float]:
         objective_values = []
         advantages = self.get_advantages(rewards, values, dones, states)
         returns = self.discount_reward(rewards, dones, self.gamma)
 
         for _ in range(self.opt_epochs):
             with tf.GradientTape(persistent=True) as tape:
-                logits = self.actor.forward(states)
+                logits = self.actor_disc.forward(states)
+
+                out = self.actor_cont.forward(states)
+                mean, log_std = tf.split(out, 2, axis=1)
+                if any([any(np.isnan(i)) for i in np.atleast_2d(out)]):
+                    print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!NAN IN UPDATE!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+                    for s in states.numpy():
+                        print(s)
+                    # print(self.actor_cont.get_weights())
+
+                log_probs = self.compute_cont_log_probs(actions_cont, mean, log_std)
+
                 values = tf.squeeze(self.critic.forward(states))
-                objective, actor_loss, critic_loss = self._compute_loss(logits, old_logits, actions, values, returns, advantages)
 
-            actor_gradients = tape.gradient(actor_loss, self.actor.model.trainable_variables)
-            critic_gradients = tape.gradient(critic_loss, self.critic.model.trainable_variables)
+                objective, cont_actor_loss, disc_actor_loss, critic_loss = self._compute_loss(
+                    new_log_probs=log_probs,
+                    old_log_probs=old_log_probs,
 
-            self.actor.optimizer.apply_gradients(zip(actor_gradients, self.actor.model.trainable_variables)) # type: ignore
-            self.critic.optimizer.apply_gradients(zip(critic_gradients, self.critic.model.trainable_variables)) # type: ignore
+                    new_logits_disc=logits,
+                    old_logits_disc=old_logits,
+
+                    log_std_new=log_std,
+                    actions_disc=actions_disc,
+
+                    values=values,
+                    returns=returns,
+                    advantages=advantages
+                )
+
+            cont_actor_gradients = tape.gradient(cont_actor_loss, self.actor_cont.trainable_variables)
+            disc_actor_gradients = tape.gradient(disc_actor_loss, self.actor_disc.trainable_variables)
+            critic_gradients = tape.gradient(critic_loss, self.critic.trainable_variables)
+
+            self.actor_cont.optimizer.apply_gradients(zip(cont_actor_gradients, self.actor_cont.trainable_variables))
+            self.actor_disc.optimizer.apply_gradients(zip(disc_actor_gradients, self.actor_disc.trainable_variables))
+            self.critic.optimizer.apply_gradients(zip(critic_gradients, self.critic.trainable_variables))
             objective_values.append(objective.numpy())
 
         return objective_values
 
+
+# Yzas
 def to_tensor(*arrays: List) -> List:
     tensors = []
     for i, array in enumerate(arrays):
-        tensor = tf.convert_to_tensor(array, dtype=tf.float32 if i != 0 else tf.int32)
+        tensor = tf.convert_to_tensor(array, dtype=tf.float32 if i != 1 else tf.int32)
         tensors.append(tensor)
     return tensors
 
@@ -157,12 +302,11 @@ def evaluate_policy(env: gym.Env, agent: PPOAgent, num_episodes: int = 10) -> Li
         obs, _ = env.reset()
         reward_per_episode = 0.0
         done = False
-
         while not done:
-            _, action, _ = agent.act(obs)
-            obs, r, terminated, truncated, _,  = env.step(action)
+            _, _, action_cont, action_disc, _ = agent.act(obs)
+            obs, r, terminated, truncated, _,  = env.step((action_cont, action_disc))
             done = terminated or truncated
-            reward_per_episode += r # type: ignore
+            reward_per_episode += r
 
         rewards.append(reward_per_episode)
 
@@ -187,7 +331,7 @@ def plot_statistics(data: list, plot_name: str, rolling_window: int = 50):
     plt.grid(True, linestyle="--", alpha=0.7)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(f"plots/ppo/{plot_name.replace(' ', '')}_ppo.png", dpi=150)
+    plt.savefig(f"/home/danil/Documents/ML/Project/Untitled_Trading_Bot/plots/ppo/{plot_name.replace(' ', '')}_ppo.png", dpi=150)
     plt.close()
 
 
@@ -198,7 +342,7 @@ def set_seed(seed: int = 123) -> None:
 
 def train(
         env: gym.Env, eval_env: gym.Env,
-        hidden_shapes: Tuple = (64, 64),
+        hidden_size: int = 10,
 
         actor_lr: float | np.float32 = 1e-4,
         critic_lr: float | np.float32 = 5e-4,
@@ -220,9 +364,10 @@ def train(
         eval_episodes: int = 10,
         total_steps: int = 100_000,
 
+        display_stat: bool = True,
         save_path: str = 'models_params',
         seed: int = 123
-    ):
+    ) -> Tuple[np.float32]:
 
     set_seed(seed)
 
@@ -235,24 +380,26 @@ def train(
     eval_rewards = []
     ep_lens = []
 
-    batch_actions = []
+    batch_actions_disc = []
+    batch_actions_cont = []
     batch_rewards = []
     batch_states = []
     batch_values = []
-    batch_logits = []
+    batch_logits_disc = []
+    batch_log_probs = []
     batch_dones = []
 
     rewards_per_episode = 0.0
     current_batch_size = 0
     ep_len = 0
 
-    observation_shape = env.observation_space.shape[0] # type: ignore
-    num_actions = env.action_space.n # type: ignore
+    observation_shape = env.observation_space.shape[0]
+    num_actions = env.action_space[1].n
 
     agent = PPOAgent(
-        observation_shape, num_actions, hidden_shapes, actor_lr,
-        critic_lr, advantage_type, gamma, lam, clip_ratio,
-        opt_epochs, c1, c2
+        observation_shape=observation_shape, num_actions=num_actions, cont_actions=1, hidden_size=hidden_size, actor_lr=actor_lr,
+        critic_lr=critic_lr, advantage_type=advantage_type, gamma=gamma, lam=lam, clip_ratio=clip_ratio,
+        opt_epochs=opt_epochs, c1=c1, c2=c2
     )
 
     best_eval = float('-inf')
@@ -261,15 +408,17 @@ def train(
         ep_len += 1
         batch_states.append(obs)
 
-        logits, action, values = agent.act(obs)
+        log_probs, logits_disc, action_cont, action_disc, values = agent.act(obs)
 
-        obs, reward, terminated, truncated, _ = env.step(action) # type: ignore
+        obs, reward, terminated, truncated, _ = env.step((action_cont, action_disc))
 
         current_batch_size += 1
-        batch_actions.append(action)
+        batch_actions_disc.append(action_disc)
+        batch_actions_cont.append(action_cont)
         batch_rewards.append(reward)
         batch_values.append(values)
-        batch_logits.append(logits.numpy()[0])
+        batch_logits_disc.append(logits_disc.numpy()[0])
+        batch_log_probs.append(log_probs.numpy()[0])
 
         rewards_per_episode += reward # type: ignore
 
@@ -277,11 +426,35 @@ def train(
         batch_dones.append(done)
 
         if current_batch_size >= batch_size:
-            a, s, o_l, v, r, d = to_tensor(batch_actions, batch_states, batch_logits, batch_values, batch_rewards,  batch_dones)
-            objective_values = agent.update(s, a, o_l, v, r, d)
+            a_c, a_d, s, o_l_p, o_l_d, v, r, d = to_tensor(
+                batch_actions_cont, batch_actions_disc,
+                batch_states, batch_log_probs,
+                batch_logits_disc, batch_values,
+                batch_rewards, batch_dones
+            )
+
+            # print(f'train batch_actions_cont -> {a_c}')
+            # print(f'train batch_actions_disc -> {a_d}')
+            # print(f'train batch_states -> {s}')
+            # print(f'train batch_log_probs -> {o_l_p}')
+            # print(f'train batch_logits_disc -> {o_l_d}')
+            # print(f'train batch_values -> {v}')
+            # print(f'train batch_rewards -> {r}')
+            # print(f'train batch_dones -> {d}')
+
+            objective_values = agent.update(s, a_c, a_d, o_l_p, o_l_d, v, r, d)
             total_losses.extend(objective_values)
             last_n_losses.extend(objective_values)
-            batch_actions, batch_states, batch_logits, batch_values, batch_rewards,  batch_dones = [], [], [], [], [], []
+
+            batch_actions_cont.clear()
+            batch_actions_disc.clear()
+            batch_logits_disc.clear()
+            batch_log_probs.clear()
+            batch_rewards.clear()
+            batch_states.clear()
+            batch_values.clear()
+            batch_dones.clear()
+
             current_batch_size = 0
 
         if done:
@@ -298,44 +471,22 @@ def train(
             eval_rewards.extend(rewards)
             avg_reward = np.mean(rewards)
 
-            tqdm.write(f'Policy evaluation | Mean rewards {avg_reward:.3f} per {eval_episodes} episodes |')
+            if display_stat:
+                tqdm.write(f'Policy evaluation | Mean rewards {avg_reward:.3f} per {eval_episodes} episodes |')
 
             if avg_reward > best_eval:
                 best_eval = avg_reward
                 agent.save(save_path)
 
         if step % stats_every == 0:
-            tqdm.write(f'Step {step} | Mean rewards: {np.mean(last_n_rewards):.3f} | Mean objective: {np.mean(last_n_losses):.3f} |')
+            if display_stat:
+                tqdm.write(f'Step {step} | Mean rewards: {np.mean(last_n_rewards):.3f} | Mean objective: {np.mean(last_n_losses):.3f} |')
             last_n_rewards = []
             last_n_losses = []
 
-    plot_statistics(total_rewards, 'Total rewards per episode')
-    plot_statistics(ep_lens, 'Total episode lengths')
-    plot_statistics(total_losses, 'Objective')
+    if display_stat:
+        plot_statistics(total_rewards, 'Total rewards per episode')
+        plot_statistics(ep_lens, 'Total episode lengths')
+        plot_statistics(total_losses, 'Objective')
 
-
-# if __name__ == '__main__':
-
-#     env = gym.make('CartPole-v1')
-#     eval_env = gym.make('CartPole-v1')
-
-#     train(
-#         env, eval_env,
-#         hidden_shapes=(64, 64),
-#         actor_lr=2e-4,
-#         critic_lr=5e-4,
-#         advantage_type='gae',
-#         gamma=0.99,
-#         lam=0.95,
-#         clip_ratio=0.2,
-#         opt_epochs=4,
-#         c1=0.5,
-#         c2=0.001,
-#         batch_size=256,
-#         stats_every=1000,
-#         eval_interval=1000,
-#         eval_episodes=10,
-#         total_steps=50000,
-#         save_path='models_params',
-#         seed=123
-#     )
+    return np.mean(total_losses), np.mean(total_rewards)

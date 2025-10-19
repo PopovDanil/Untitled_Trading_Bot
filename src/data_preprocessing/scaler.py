@@ -51,6 +51,20 @@ class Data_Scaler:
 
         return data.values
 
+    def __transform_zeros(self, data: pd.DataFrame) -> pd.DataFrame:
+        new_data = []
+        index = list(data.index)
+        for i in range(len(index)):
+            idx = index[i]
+            prev = index[i] if i == 0 else index[i - 1]
+            nxt = index[i] if i == len(index) - 1 else index[i + 1]
+            if data[idx] == 0.0:
+                new_data.append(data[prev] / 2 + data[nxt] / 2)
+            else:
+                new_data.append(data[idx])
+
+        return new_data
+
     def __transform(self, to_transform: pd.DataFrame | pd.Series = None, save: bool = True) -> np.ndarray | None:
 
         read_files = True
@@ -64,7 +78,7 @@ class Data_Scaler:
 
             data = self.scaler.transform(df.values)
             data = pd.DataFrame(data=data, columns=df.columns)
-            data['close_raw'] = df['close'].values
+            data['close_raw'] = df['close'].values # self.__transform_zeros(df['close'])
 
             if save:
                 file_to_save = join_paths(self.saving_path, f'{self.ticker}_{str(uuid4())}.csv')

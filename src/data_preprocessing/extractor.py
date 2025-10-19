@@ -46,7 +46,6 @@ class Data_Extractor:
             if start < 0 or end + self.after_session_interval + 1 > data.shape[0]:
                 continue
 
-            # TODO: remove KOSTYLY
             if 'Close' in data.columns:
                 session_closes = data['Close'].iloc[start : end].values
             else:
@@ -62,9 +61,14 @@ class Data_Extractor:
                 path = join_paths(self.saving_path, f'{ticker}_session{idx + 1}.csv')
                 session.to_csv(path)
 
+    def __drop_zero_price(self, data: pd.DataFrame) -> None:
+        zeros = data[data['close'] <= 0.0]
+        data.drop(zeros.index, inplace=True)
+
     def extract_data(self, files: List[str], *args, **kwargs) -> None:
 
         for file in tqdm(files):
             data = pd.read_csv(file)
             ticker = extract_ticker_name(file)
+            self.__drop_zero_price(data)
             self.__extract_intervals(data, ticker, self.min_volatility)
