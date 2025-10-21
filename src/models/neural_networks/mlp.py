@@ -21,3 +21,8 @@ class MLP:
     def forward(self, x: List | np.ndarray | tf.Tensor) -> tf.Tensor:
         output = self.model(x)
         return output
+
+
+m = MLP(3, output_shape=1)
+obs = tf.constant([[1, 2, 3]])
+print(m.forward(obs))
