@@ -7,8 +7,8 @@ import numpy as np
 import tensorflow as tf
 from tqdm import tqdm
 
-from ...settings import DIR
-from ..neural_networks.lstm import LSTM
+from models.neural_networks.lstm import LSTM
+from settings import DIR
 
 
 class PPOAgent:
@@ -50,10 +50,10 @@ class PPOAgent:
         self.LOG_STD_MAX = 2.0
 
     def save(self, save_path: str = 'models_params') -> None:
-        os.path.join(dir, save_path, 'ppo', 'actor_cont,keras')
-        self.actor_cont.save(path=os.path.join(DIR, save_path, 'ppo', 'actor_cont.keras'))
-        self.actor_disc.save(path=os.path.join(DIR, save_path, 'ppo', 'actor_disc.keras'))
-        self.critic.save(path=os.path.join(DIR, save_path, 'ppo', 'critic.keras'))
+        intermediate_path = os.path.join('models', 'algorithms')
+        self.actor_cont.save(path=os.path.join(DIR, intermediate_path, save_path, 'ppo', 'actor_cont.keras'))
+        self.actor_disc.save(path=os.path.join(DIR, intermediate_path, save_path, 'ppo', 'actor_disc.keras'))
+        self.critic.save(path=os.path.join(DIR, intermediate_path, save_path, 'ppo', 'critic.keras'))
 
     def act(self, observation: np.ndarray | tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
         logits_disc = self.actor_disc.forward(np.atleast_2d(observation))
@@ -300,7 +300,7 @@ def plot_statistics(data: list, plot_name: str, rolling_window: int = 50):
     plt.grid(True, linestyle="--", alpha=0.7)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(os.path.join(DIR, 'plots', 'ppo', f'{plot_name.replace(' ', '_')}'), dpi=150)
+    plt.savefig(os.path.join(os.path.dirname(DIR), 'plots', 'ppo', f'{plot_name.replace(' ', '_')}'), dpi=200)
     plt.close()
 
 
