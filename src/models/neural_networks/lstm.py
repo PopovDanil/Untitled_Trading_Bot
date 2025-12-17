@@ -3,39 +3,40 @@ import tensorflow as tf
 
 
 class LSTM(tf.Module):
-    def __init__(self, observation_shape: int, hidden_shape: int, output_shape: int, lr: float = 1e-5, name = None):
+    def __init__(self, timestamps: int = 3, features: int = 6, output_shape: int = 3, hidden_layers: int = 32, hidden_units: int = 32, lr: float = 1e-5, name = None):
         super().__init__(name)
 
-        inputs = keras.layers.LSTM(
-            units=hidden_shape,
-            kernel_initializer='he_uniform'
-        )
+        self.model = keras.Sequential([
+            keras.Input(shape=(timestamps, features)),
+            *[
+                keras.layers.LSTM(hidden_units, kernel_initializer='orthogonal', dropout=0.2, return_sequences=True, implementation=2)
+                for _ in range(hidden_layers)
+            ],
+            keras.layers.GRU(max(hidden_units // 2, 4)),
+            keras.layers.BatchNormalization(),
+            keras.layers.Dense(output_shape, activation='linear', kernel_initializer='he_uniform'),
+        ])
 
-        outputs = keras.layers.Dense(
-            units=output_shape,
-            activation='linear',
-            kernel_initializer='he_uniform'
-        )
-
-        self.model = keras.Sequential(
-            [inputs, outputs]
-        )
+        # self.model.summary()
 
         self.optimizer = keras.optimizers.Adam(learning_rate=lr, global_clipnorm=0.5)
 
+    @tf.function
     def forward(self, x: tf.Tensor) -> tf.Tensor:
-        shape = (x.shape[0], 1, x.shape[1])
-        inputs = tf.reshape(x, shape=shape)
-        return self.model(inputs)
+        return self.model(x)
 
     @property
     def trainable_variables(self) -> list[str]:
         return self.model.trainable_variables
 
     def save(self, path: str):
-        ckpt = tf.train.Checkpoint(model=self)
+        ckpt = tf.train.Checkpoint(model=self.model)
         ckpt.write(path)
 
     def load(self, path: str):
-        ckpt = tf.train.Checkpoint(model=self)
+        ckpt = tf.train.Checkpoint(model=self.model)
         ckpt.restore(path).expect_partial()
+
+    def __del__(self):
+        del self.model
+        keras.backend.clear_session()

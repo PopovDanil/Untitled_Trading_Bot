@@ -1,22 +1,47 @@
+import gc
 import os
+from collections import deque
 from typing import List, Tuple
 
 import gymnasium as gym
 import matplotlib.pyplot as plt
 import numpy as np
+import psutil
 import tensorflow as tf
-from tqdm import tqdm
-
 from models.neural_networks.lstm import LSTM
 from settings import DIR
+from tqdm import tqdm
+
+DEBUG = True
+
+
+class RecourseMonitor:
+    def __init__(self):
+        super().__init__()
+        self.batch_count = 0
+
+    def get_info(self):
+        self.batch_count += 1
+        cpu_percent = psutil.cpu_percent()
+        memory = psutil.virtual_memory()
+
+        print(f"Batch {self.batch_count}: "
+                f"CPU: {cpu_percent}%, "
+                f"RAM: {memory.percent}%")
+
+        if tf.config.experimental.list_physical_devices('GPU'):
+            gpu_stats = tf.config.experimental.get_memory_info('GPU:0')
+            print(f"GPU Memory: {gpu_stats['current'] / 1024**2:.0f}MB")
 
 
 class PPOAgent:
     def __init__(
-            self, observation_shape: int,
+            self, num_features: int,
             num_actions: int,
             cont_actions: int,
-            hidden_shape: int = 10,
+            memory_size: int = 3,
+            hidden_layers: int = 16,
+            hidden_units: int = 32,
             actor_lr: float | np.float32 = 1e-4,
             critic_lr: float | np.float32 = 5e-4,
             advantage_type: str = 'gae',
@@ -30,15 +55,16 @@ class PPOAgent:
 
         self.opt_epochs = opt_epochs
         self.clip_ratio = clip_ratio
+        self.memory_size = memory_size
         self.num_actions = num_actions
         self.cont_actions = cont_actions
+        self.num_features = num_features
         self.advantage_type = advantage_type
 
         self.actor_lr = actor_lr
         self.critic_lr = critic_lr
-        self.actor_cont = LSTM(observation_shape=1, output_shape=2*cont_actions, hidden_shape=hidden_shape, lr=actor_lr)
-        self.actor_disc = LSTM(observation_shape=1, output_shape=num_actions, hidden_shape=hidden_shape, lr=actor_lr)
-        self.critic = LSTM(observation_shape=1, output_shape=1, hidden_shape=hidden_shape, lr=critic_lr)
+        self.actor = LSTM(timestamps=memory_size, features=num_features, output_shape=3, hidden_layers=hidden_layers, hidden_units=hidden_units, lr=actor_lr)
+        self.critic = LSTM(timestamps=memory_size, features=num_features, output_shape=1, hidden_layers=hidden_layers, hidden_units=hidden_units, lr=critic_lr)
 
         self.c1 = c1
         self.c2 = c2
@@ -49,24 +75,27 @@ class PPOAgent:
         self.LOG_STD_MIN = -10.0
         self.LOG_STD_MAX = 2.0
 
+        self.recourse_monitor = RecourseMonitor()
+
     def save(self, save_path: str = 'models_params') -> None:
         intermediate_path = os.path.join('models', 'algorithms')
-        self.actor_cont.save(path=os.path.join(DIR, intermediate_path, save_path, 'ppo', 'actor_cont.keras'))
-        self.actor_disc.save(path=os.path.join(DIR, intermediate_path, save_path, 'ppo', 'actor_disc.keras'))
+        self.actor.save(path=os.path.join(DIR, intermediate_path, save_path, 'ppo', 'actor.keras'))
         self.critic.save(path=os.path.join(DIR, intermediate_path, save_path, 'ppo', 'critic.keras'))
 
-    def act(self, observation: np.ndarray | tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
-        logits_disc = self.actor_disc.forward(np.atleast_2d(observation))
+    def act(self, observation: np.ndarray) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
+        mixed = self.actor.forward(observation.reshape(1, *observation.shape))
+        logits_disc, mean, log_std = tf.split(mixed, 3, axis=1)
 
         action_disc = tf.squeeze(tf.random.categorical(logits_disc, 1)).numpy()
 
-        action_cont, cont_log_probs, _, _ = self.compute_cont_action(observations=observation)
+        action_cont, cont_log_probs, _, _ = self.compute_cont_action(mean=mean, log_std=log_std)
         action_cont = action_cont.numpy()
 
-        value = tf.squeeze(self.critic.forward(np.atleast_2d(observation)))
+        value = tf.squeeze(self.critic.forward(observation.reshape(1, *observation.shape)))
 
         return cont_log_probs, logits_disc, action_cont, action_disc, value
 
+    @tf.function
     def compute_cont_log_probs(self, actions: np.ndarray | tf.Tensor, mean: tf.Tensor, log_std: tf.Tensor) -> tf.Tensor:
 
         actions = tf.reshape(actions, shape=(actions.shape[0], 1))
@@ -88,12 +117,12 @@ class PPOAgent:
 
         return cont_log_probs
 
-    def compute_cont_action(self, observations: np.ndarray) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
-        cont_out = self.actor_cont.forward(np.atleast_2d(observations))
-        # tf.debugging.check_numerics(cont_out, message='NaNs were detected in compute_cont_action')
+    @tf.function
+    def compute_cont_action(self, mean: tf.Tensor, log_std: tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
+        # tf.debugging.check_numerics(mean, message='NaNs were detected in compute_cont_action')
+        # tf.debugging.check_numerics(log_std, message='NaNs were detected in compute_cont_action')
 
-        mean, log_std = tf.split(cont_out, 2, axis=1)
-        log_std = tf.clip_by_value(log_std, self.LOG_STD_MIN, self.LOG_STD_MAX)
+        log_std_clipped = tf.clip_by_value(log_std, self.LOG_STD_MIN, self.LOG_STD_MAX)
         std = tf.math.exp(log_std) + self.EPS
 
         z = tf.random.normal(shape=(self.cont_actions,))
@@ -101,68 +130,74 @@ class PPOAgent:
 
         action_cont = tf.squeeze(tf.tanh(u))
 
-        cont_log_probs = -0.5 * tf.reduce_sum((z ** 2) + 2.0 * log_std + tf.math.log(2 * np.pi), axis=1, keepdims=True)
+        cont_log_probs = -0.5 * tf.reduce_sum((z ** 2) + 2.0 * log_std_clipped + tf.math.log(2 * np.pi), axis=1, keepdims=True)
         jacobian = tf.math.log(1.0 - action_cont ** 2 + self.EPS)
         cont_log_probs = cont_log_probs - jacobian
 
-        # tf.debugging.check_numerics(cont_log_probs, message='NaNs were detected in compute_cont_action')
+        tf.debugging.check_numerics(cont_log_probs, message='NaNs were detected in compute_cont_action')
 
         return action_cont, cont_log_probs, mean, std
 
+    @tf.function
     def discount_reward(self, rewards: tf.Tensor, dones: tf.Tensor, gamma: float | np.float32 = 0.99) -> tf.Tensor:
-        result = []
-        discounted_sum = 0.0
+        rews = tf.reverse(rewards, axis=[0])
+        dns = tf.reverse(dones, axis=[0])
 
-        for reward, done in zip(tf.reverse(rewards, axis=[0]), tf.reverse(dones, axis=[0])):
+        def worker(carry, x):
+            reward, done = x
+            carry = reward + gamma * carry * tf.where(done, 0.0, 1.0)
+            return carry
 
-            if done:
-                discounted_sum = 0.0
+        discounted = tf.scan(
+            fn=worker,
+            elems=(rews, dns),
+            initializer=tf.constant(0.0)
+        )
 
-            discounted_sum = reward + gamma * discounted_sum
-            result.append(discounted_sum)
+        return tf.reverse(discounted, axis=[0])
 
-        result = tf.convert_to_tensor(result[::-1], dtype=tf.float32)
-
-        return result
-
+    @tf.function
     def standardize(self, values) -> tf.Tensor:
         return (values - tf.reduce_mean(values)) / (tf.math.reduce_std(values) + 1e-8)
 
+    @tf.function
     def simple_advantages(self, returns, values) -> tf.Tensor:
         advantages = returns - values
         return self.standardize(advantages)
 
-    def gae_advantages(self, rewards, values, dones, states) -> tf.Tensor:
-        T = rewards.shape[0]
-        advantages = np.zeros(T, dtype=np.float32)
-        gae = .0
+    @tf.function
+    def gae_advantages(self, rewards, values, dones, states):
 
-        next_value = .0
-        if not dones[-1]:
-            next_value = tf.squeeze(self.critic.forward(np.atleast_2d(states[-1])))
+        next_values = tf.concat([values[1:], tf.expand_dims(values[-1], 0)], axis=0)
+        deltas = rewards + self.gamma * next_values * (1.0 - tf.cast(dones, tf.float32)) - values
 
-        for t in reversed(range(T)):
-            delta = rewards[t] + self.gamma * next_value * (1 - dones[t]) - values[t]
-            gae = delta + self.gamma * self.lam * (1 - dones[t]) * gae
-            next_value = values[t]
-            advantages[t] = gae
+        def body(carry, x):
+            delta, done = x
+            carry = delta + self.gamma * self.lam * (1.0 - tf.cast(done, tf.float32)) * carry
+            return carry
 
-        advantages = tf.constant(advantages)
-        advantages = self.standardize(advantages)
+        adv = tf.scan(
+            fn=body,
+            elems=(tf.reverse(deltas, [0]), tf.reverse(dones, [0])),
+            initializer=tf.constant(0.0),
+        )
+        adv = tf.reverse(adv, [0])
 
-        return advantages
+        return self.standardize(adv)
 
+    @tf.function
     def get_advantages(self, rewards, values, dones, states) -> tf.Tensor:
         if self.advantage_type == 'simple':
             return self.simple_advantages(rewards, values)
         return self.gae_advantages(rewards, values, dones, states)
 
+    @tf.function
     def _compute_loss(self, new_log_probs, old_log_probs, new_logits_disc, old_logits_disc, log_std_new, actions_disc, values, returns, advantages):
 
         # Only for DEBUGGING
-        # tf.debugging.check_numerics(new_log_probs, 'new_log_probs contains NaNs')
-        # tf.debugging.check_numerics(old_log_probs, 'old_log_probs contains NaNs')
-        # tf.debugging.check_numerics(log_std_new, 'log_std_new contains NaNs')
+        tf.debugging.check_numerics(new_log_probs, 'new_log_probs contains NaNs')
+        tf.debugging.check_numerics(old_log_probs, 'old_log_probs contains NaNs')
+        tf.debugging.check_numerics(log_std_new, 'log_std_new contains NaNs')
 
         actions_one_hot = tf.one_hot(actions_disc, self.num_actions, dtype=tf.float32)
 
@@ -192,8 +227,54 @@ class PPOAgent:
 
         disc_actor_loss = policy_loss_disc - self.c2 * entropy_bonus_disc
         cont_actor_loss = policy_loss_cont - self.c2 * entropy_bonus_cont
+        actor_loss = disc_actor_loss + cont_actor_loss
 
-        return objective, cont_actor_loss, disc_actor_loss, value_loss
+        return objective, actor_loss, value_loss
+
+    @tf.function
+    def _apply_grad(
+            self,
+            states: tf.Tensor,
+            returns: tf.Tensor,
+            advantages: tf.Tensor,
+            actions_cont: tf.Tensor,
+            actions_disc: tf.Tensor,
+            old_log_probs: tf.Tensor,
+            old_logits: tf.Tensor,
+            values: tf.Tensor,
+        ):
+        with tf.GradientTape() as tape1, tf.GradientTape() as tape2:
+            mixed = self.actor.forward(states)
+            logits, mean, log_std = tf.split(mixed, 3, axis=1)
+
+            tf.debugging.check_numerics(mixed, 'NaNs were detected in update')
+
+            log_probs = self.compute_cont_log_probs(actions_cont, mean, log_std)
+
+            values = tf.squeeze(self.critic.forward(states))
+
+            objective, actor_loss, critic_loss = self._compute_loss(
+                new_log_probs=log_probs,
+                old_log_probs=old_log_probs,
+
+                new_logits_disc=logits,
+                old_logits_disc=old_logits,
+
+                log_std_new=log_std,
+                actions_disc=actions_disc,
+
+                values=values,
+                returns=returns,
+                advantages=advantages
+            )
+
+        actor_gradients = tape1.gradient(actor_loss, self.actor.trainable_variables)
+        critic_gradients = tape2.gradient(critic_loss, self.critic.trainable_variables)
+
+        self.actor.optimizer.apply_gradients(zip(actor_gradients, self.actor.trainable_variables))
+        self.critic.optimizer.apply_gradients(zip(critic_gradients, self.critic.trainable_variables))
+
+        return objective
 
     def update(
         self,
@@ -204,50 +285,50 @@ class PPOAgent:
         old_logits: tf.Tensor,
         values: tf.Tensor,
         rewards: tf.Tensor,
-        dones: tf.Tensor
+        dones: tf.Tensor,
+        debug: bool = False,
     ) -> List[float]:
+
+        if DEBUG:
+            print('Monitoring before UPDATE STARTED')
+            self.recourse_monitor.get_info()
+
         objective_values = []
-        advantages = self.get_advantages(rewards, values, dones, states)
         returns = self.discount_reward(rewards, dones, self.gamma)
+        advantages = self.get_advantages(rewards, values, dones, states)
 
-        for _ in range(self.opt_epochs):
-            with tf.GradientTape(persistent=True) as tape:
-                logits = self.actor_disc.forward(states)
+        for epoch in range(self.opt_epochs):
+            # print(f'Optimization epoch {epoch}')
+            # self.recourse_monitor.get_info()
 
-                out = self.actor_cont.forward(states)
-                mean, log_std = tf.split(out, 2, axis=1)
+            objective = self._apply_grad(
+                states=states,
+                returns=returns,
+                advantages=advantages,
+                actions_cont=actions_cont,
+                actions_disc=actions_disc,
+                old_log_probs=old_log_probs,
+                old_logits=old_logits,
+                values=values
+            )
 
-                # tf.debugging.check_numerics(out, 'NaNs were detected in update')
+            objective_values.append(objective)
 
-                log_probs = self.compute_cont_log_probs(actions_cont, mean, log_std)
+            # if debug:
+            #     print('Monitoring BEFORE garbage collected in UPDATE')
+            #     self.recourse_monitor.get_info()
 
-                values = tf.squeeze(self.critic.forward(states))
+            # del tape1
+            # del tape2
+            # del actor_gradients
+            # del critic_gradients
+            # gc.collect()
 
-                objective, cont_actor_loss, disc_actor_loss, critic_loss = self._compute_loss(
-                    new_log_probs=log_probs,
-                    old_log_probs=old_log_probs,
+            # if debug:
+            #     print('Monitoring AFTER garbage collected in UPDATE')
+            #     self.recourse_monitor.get_info()
 
-                    new_logits_disc=logits,
-                    old_logits_disc=old_logits,
-
-                    log_std_new=log_std,
-                    actions_disc=actions_disc,
-
-                    values=values,
-                    returns=returns,
-                    advantages=advantages
-                )
-
-            cont_actor_gradients = tape.gradient(cont_actor_loss, self.actor_cont.trainable_variables)
-            disc_actor_gradients = tape.gradient(disc_actor_loss, self.actor_disc.trainable_variables)
-            critic_gradients = tape.gradient(critic_loss, self.critic.trainable_variables)
-
-            self.actor_cont.optimizer.apply_gradients(zip(cont_actor_gradients, self.actor_cont.trainable_variables))
-            self.actor_disc.optimizer.apply_gradients(zip(disc_actor_gradients, self.actor_disc.trainable_variables))
-            self.critic.optimizer.apply_gradients(zip(critic_gradients, self.critic.trainable_variables))
-            objective_values.append(objective.numpy())
-
-        return objective_values
+        return tf.squeeze(tf.stack(objective_values))
 
 
 def to_tensor(*arrays: List) -> List:
@@ -256,7 +337,7 @@ def to_tensor(*arrays: List) -> List:
 
         tensor = tf.stack(array)
 
-        if not tensor.dtype.is_integer:
+        if not tensor.dtype.is_integer and not tensor.dtype.is_bool:
             tensor = tf.cast(tensor, dtype=tf.float32)
 
         tensors.append(tensor)
@@ -264,15 +345,30 @@ def to_tensor(*arrays: List) -> List:
     return tensors
 
 
-def evaluate_policy(env: gym.Env, agent: PPOAgent, num_episodes: int = 10) -> List[float]:
+def create_memory_window(memory_size: int, num_features: int, initial_obs: np.ndarray) -> deque:
+    window = deque(maxlen=memory_size)
+
+    for _ in range(memory_size):
+        window.append(np.zeros(
+            shape=(num_features,),
+            dtype=np.float32,
+        ))
+    window.append(initial_obs)
+
+    return window
+
+
+def evaluate_policy(env: gym.Env, agent: PPOAgent, num_episodes: int = 10, memory_size: int = 3) -> List[float]:
     rewards = []
 
     for _ in range(num_episodes):
         obs, _ = env.reset()
+        window = create_memory_window(memory_size=memory_size, num_features=env.observation_space.shape[0], initial_obs=obs)
+
         reward_per_episode = 0.0
         done = False
         while not done:
-            _, _, action_cont, action_disc, _ = agent.act(obs)
+            _, _, action_cont, action_disc, _ = agent.act(np.array(window))
             obs, r, terminated, truncated, _,  = env.step((action_cont, action_disc))
             done = terminated or truncated
             reward_per_episode += r
@@ -310,8 +406,10 @@ def set_seed(seed: int = 123) -> None:
 
 
 def train(
-        env: gym.Env, eval_env: gym.Env,
-        hidden_shape: int = 10,
+        env: gym.Env, eval_env: gym.Env | None = None,
+
+        hidden_layers: int = 16,
+        hidden_units: int = 32,
 
         actor_lr: float | np.float32 = 1e-4,
         critic_lr: float | np.float32 = 5e-4,
@@ -328,14 +426,16 @@ def train(
         c2: float | np.float32 = 0.01,
 
         batch_size: int = 64,
+        memory_size: int = 3,
         stats_every: int = 1000,
         eval_interval: int = 1000,
         eval_episodes: int = 10,
         total_steps: int = 100_000,
 
+        del_model: bool = False,
         display_stat: bool = True,
         save_path: str = 'models_params',
-        seed: int = 123
+        seed: int = 123,
     ) -> Tuple[np.float32]:
 
     set_seed(seed)
@@ -366,28 +466,30 @@ def train(
     num_actions = env.action_space[1].n
 
     agent = PPOAgent(
-        observation_shape=observation_shape, num_actions=num_actions, cont_actions=1, hidden_shape=hidden_shape, actor_lr=actor_lr,
-        critic_lr=critic_lr, advantage_type=advantage_type, gamma=gamma, lam=lam, clip_ratio=clip_ratio,
-        opt_epochs=opt_epochs, c1=c1, c2=c2
+        num_features=observation_shape, num_actions=num_actions, cont_actions=1, memory_size=memory_size, hidden_layers=hidden_layers,
+        hidden_units=hidden_units, actor_lr=actor_lr, critic_lr=critic_lr, advantage_type=advantage_type, gamma=gamma, lam=lam,
+        clip_ratio=clip_ratio, opt_epochs=opt_epochs, c1=c1, c2=c2
     )
+    window = create_memory_window(memory_size=memory_size, num_features=observation_shape, initial_obs=obs)
 
     best_eval = float('-inf')
 
     for step in tqdm(range(1, total_steps + 1), ncols=80, desc='Steps'):
         ep_len += 1
-        batch_states.append(obs)
+        batch_states.append(np.array(window, dtype=np.float32, copy=True))
 
-        log_probs, logits_disc, action_cont, action_disc, values = agent.act(obs)
+        log_probs, logits_disc, action_cont, action_disc, values = agent.act(np.array(window))
 
         obs, reward, terminated, truncated, _ = env.step((action_cont, action_disc))
+        window.append(obs)
 
         current_batch_size += 1
         batch_actions_disc.append(action_disc)
         batch_actions_cont.append(action_cont)
         batch_rewards.append(reward)
         batch_values.append(values)
-        batch_logits_disc.append(logits_disc.numpy()[0])
-        batch_log_probs.append(log_probs.numpy()[0])
+        batch_logits_disc.append(logits_disc[0])
+        batch_log_probs.append(log_probs[0])
 
         rewards_per_episode += reward
 
@@ -402,7 +504,8 @@ def train(
                 batch_rewards, batch_dones
             )
 
-            objective_values = agent.update(s, a_c, a_d, o_l_p, o_l_d, v, r, d)
+            objective_values = agent.update(s, a_c, a_d, o_l_p, o_l_d, v, r, d,
+                                debug=False).numpy()
             total_losses.extend(objective_values)
             last_n_losses.extend(objective_values)
 
@@ -419,13 +522,14 @@ def train(
 
         if done:
             obs, _ = env.reset()
+            window = create_memory_window(memory_size=memory_size, num_features=observation_shape, initial_obs=obs) # recreate window
             ep_lens.append(ep_len)
             last_n_rewards.append(rewards_per_episode)
             total_rewards.append(rewards_per_episode)
             ep_len = 0.0
             rewards_per_episode = 0.0
 
-        if step % eval_interval == 0:
+        if step % eval_interval == 0 and eval_env is not None:
             rewards = evaluate_policy(eval_env, agent, eval_episodes)
 
             eval_rewards.extend(rewards)
@@ -448,5 +552,9 @@ def train(
         plot_statistics(total_rewards, 'Total rewards per episode')
         plot_statistics(ep_lens, 'Total episode lengths')
         plot_statistics(total_losses, 'Objective')
+
+    if del_model:
+        del agent
+        gc.collect()
 
     return np.mean(total_losses), np.mean(total_rewards)

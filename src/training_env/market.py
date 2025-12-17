@@ -43,27 +43,28 @@ class Market(gym.Env):
         self.position = 0 # 0 - waiting, 1 - long, -1 - short
         self.entry_price = 0.0
 
-        self.current_price = self.observations[0].iloc[0]['close']
+        self.current_price = self.observations.iloc[0]['close']
         self.previous_price = self.current_price
         self.current_episode = 0
         self.current_step = -1
 
     def _reorder_obs(self):
-        random.shuffle(self.observations)
+        random.shuffle(self.files)
+
+    def _load_file(self, file: str) -> pd.DataFrame:
+        data = pd.read_csv(file, index_col=0)
+        return data
 
     def _get_observations(self, files: List[str]):
-        self.observations = []
-        for file in files:
-            data = pd.read_csv(file, index_col=0)
-            self.observations.append(data)
+        self.observations = self._load_file(files[0])
 
         # exclude close_raw
-        self.observation_shape = self.observations[0].shape[1] - 1
-        self.episode_len = self.observations[0].shape[0]
-        self.num_episodes = len(self.observations)
+        self.observation_shape = self.observations.shape[1] - 1
+        self.episode_len = self.observations.shape[0]
+        self.num_episodes = len(files)
 
         # exclude close_raw
-        self.data_columns = self.observations[0].columns.to_list()
+        self.data_columns = self.observations.columns.to_list()
         self.data_columns.remove('close_raw')
 
     def _get_next_obs(self) -> Tuple[np.ndarray, bool]:
@@ -80,19 +81,22 @@ class Market(gym.Env):
             position = 0
             self.current_step = -1
             self.current_episode += 1
+            self.observations = self._load_file(self.files[self.current_episode])
 
-            if self.current_episode >= self.num_episodes:
+            if self.current_episode >= self.num_episodes - 1:
                 self._reorder_obs()
                 self.current_episode = 0
         else:
             remaining_steps = self.episode_len - self.current_step
-            obs = self.observations[self.current_episode].loc[self.current_step, self.data_columns].values
+            obs = self.observations.loc[self.current_step, self.data_columns].values
 
         # Normalize them
         norm_step = self.current_step / self.episode_len
         norm_remaining = remaining_steps / self.episode_len
 
         obs = np.hstack([obs, np.array([position, norm_step, norm_remaining])], dtype=np.float32)
+
+        print(f'Current file - {self.current_episode} | obs - {obs} |')
 
         return obs, done
 
@@ -105,7 +109,7 @@ class Market(gym.Env):
         if done: close = True
 
         # third element - close
-        self.current_price = self.observations[self.current_episode].iloc[self.current_step]['close_raw']
+        self.current_price = self.observations.iloc[self.current_step]['close_raw']
 
         reward = (self.position * (self.current_price - self.previous_price)) / self.initial_cash * self.reward_scaler
         truncated = done
@@ -181,7 +185,7 @@ class Market(gym.Env):
         if done:
             obs, _ = self._get_next_obs()
 
-        self.current_price = self.observations[self.current_episode].iloc[0]['close_raw']
+        self.current_price = self.observations.iloc[0]['close_raw']
         self.previous_price = self.current_price
 
         obs = np.hstack([obs, np.array([1])], dtype=np.float32)

@@ -4,3 +4,4 @@ data/
 __pycache__
 __init__
 *.keras.*
+.vscode
