@@ -1,5 +1,7 @@
 
+import numpy as np
 import pandas as pd
+import pandas_ta as ta
 from utils import split_period_into_days
 from yfinance import download
 
@@ -26,10 +28,14 @@ class Collector:
                 print(f'Missing data for {start}!')
                 continue
 
-            df['date'] = [date.to_pydatetime().date() for date in df.index]
-            df = df.reset_index(drop=True)
+            df['date'] = [date.to_pydatetime() for date in df.index]
 
             data = pd.concat([data, df], axis=0)
+
+        data = data.reset_index(drop=True)
+        date = data['date']
+        data = data.drop(columns=['date'])
+        data.index = date
 
         return data
 
@@ -58,12 +64,81 @@ class Collector:
 
             new_df[formatted_name] = df[column]
 
-        new_df.index = new_df['date']
         return new_df
 
 
+class Preprocessor:
+    def __init__(
+            self,
+            sma_length: int = 20,
+            rsi_length: int = 14,
+            macd_fast: int = 12,
+            macd_slow: int = 26,
+            macd_signal: int = 9
+        ) -> None:
+        self.sma_length = sma_length    # Simple mean average window size
+        self.rsi_length = rsi_length    # RSI window size
+        self.macd_fast = macd_fast      # MACD
+        self.macd_slow = macd_slow      # MACD
+        self.macd_signal = macd_signal  # MACD
+
+
+    def _fill_na(self, df: pd.DataFrame) -> pd.DataFrame:
+        filled = df.copy()
+
+        for column in df.columns:
+            if column == 'date':
+                continue
+
+            mean = df[column].mean()
+            filled[column] = filled[column].fillna(mean)
+
+        return filled
+
+
+    def _add_micro_indexes(self, df: pd.DataFrame) -> pd.DataFrame:
+        data = df.copy()
+        # SMA - Simple Moving Average - average over the window of desired length
+        data['sma' + str(self.sma_length)] = ta.sma(data['close'], length=self.sma_length)
+
+        # RSI - Relative Strength Index - defines trends' power and probability of changes
+        data['rsi' + str(self.rsi_length)] = ta.rsi(data['close'], length=self.rsi_length)
+
+        # MACD - Moving Average Convergence/Divergence - shows price oscitation
+        macd = ta.macd(data['close'], fast=self.macd_fast, slow=self.macd_slow, signal=self.macd_signal)
+        for col in macd.columns:
+            data[col.lower()] = macd[col]
+
+        return data
+
+
+    def _apply_log_scaling(self, df: pd.DataFrame) -> pd.DataFrame:
+        data = df.copy()
+
+        data['log_close'] = np.log(data['close'])
+        data['log_high'] = np.log(data['high'])
+        data['log_low'] = np.log(data['low'])
+        data['log_volume'] = np.log(data['volume'])
+
+        data['log_return'] = np.log(df['close'] / df['close'].shift(1))
+
+        return data
+
+
+    def _drop_incomplete(self, df: pd.DataFrame) -> pd.DataFrame:
+        return df.dropna()
+
+
+
 d = Collector(ticker='^GSPC', period='1d')
-df = d._load_from_file('C:\\Users\\popov\\Documents\\Projects\\Project\\Untitled_Trading_Bot\\data\\train\\ADANIENSOL_5minute.csv')
-print(df.head(5))
+df = d._download_main_data()
 df = d._format_df(df)
 df.to_csv('./data/formatted.csv')
+
+p = Preprocessor()
+df = p._fill_na(df)
+df = p._add_micro_indexes(df)
+df = p._apply_log_scaling(df)
+df = p._drop_incomplete(df)
+
+df.to_csv('./data/micro.csv')
