@@ -222,6 +222,28 @@ class Extractor:
         return chosen_sessions
 
 
+class Splitter:
+    def __init__(self, ticker: str, save: bool = True) -> None:
+        self.ticker = ticker
+        self.save = save
+
+
+    def _split(self, df: pd.DataFrame) -> dict[str, pd.DataFrame]:
+        df_ = df.reset_index(drop=True)
+        df_['date'] = pd.to_datetime(df.index)
+
+        result = {}
+        for day, observations in df_.groupby(df_['date'].dt.date):
+            result[str(day)] = observations
+
+            if self.save:
+                observations.to_csv(f'./data/tmp/{self.ticker}_{day}.csv')
+
+        return result
+
+
+
+
 d = Collector(ticker='^GSPC', period='4d')
 df = d._download_main_data()
 df = d._format_df(df)
@@ -238,8 +260,11 @@ df.to_csv('./data/m.csv')
 s = Scaler(ticker='^GSPC')
 df = s._normalize(df)
 
-e = Extractor()
-dfs = e._extract_intervals(df)
+s = Splitter(ticker='^GSPC')
+dfs = s._split(df)
 
-for i, df in enumerate(dfs):
-    df.to_csv(f'./data/ext/ext{i}.csv')
+# e = Extractor()
+# dfs = e._extract_intervals(df)
+
+# for i, df in enumerate(dfs):
+#     df.to_csv(f'./data/ext/ext{i}.csv')
