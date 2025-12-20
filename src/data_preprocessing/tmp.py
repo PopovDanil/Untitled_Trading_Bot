@@ -174,6 +174,54 @@ class Scaler:
         return df_std
 
 
+class Extractor:
+    def __init__(self,
+            window_size: int = 10,
+            pre_session_size: int = 90,
+            after_session_interval: int = 60,
+            min_volatility: float = 0.05,
+            scaling_factor: float = 5
+        ) -> None:
+        self.window_size = window_size
+        self.pre_session_size = pre_session_size
+        self.after_session_interval = after_session_interval
+        self.min_volatility = min_volatility
+        self.scaling_factor = scaling_factor
+
+
+    def _calculate_volatility(self, df: pd.DataFrame) -> pd.Series:
+        close = df['close']
+        return abs(close.shift(-self.window_size) - close) / close
+
+
+    def _extract_intervals(self, data: pd.DataFrame) -> list[pd.DataFrame]:
+        df = data.reset_index(drop=True)
+
+        chosen_sessions = []
+        last_used = float('-inf')
+
+        volatility = self._calculate_volatility(df)
+        potential_sessions = volatility[volatility >= self.min_volatility]
+
+        for (end, session_vol) in potential_sessions.items():
+
+            start = end - self.pre_session_size
+            final_end = end + self.after_session_interval
+
+            if start < 0 or final_end >= df.shape[0] or end <= last_used:
+                continue
+
+            session_closes = df.iloc[start : end]
+
+            filter = np.mean(self._calculate_volatility(session_closes))
+
+            if filter < (session_vol / self.scaling_factor):
+                chosen_sessions.append(df.iloc[start : final_end])
+                last_used = final_end
+
+        return chosen_sessions
+
+
 d = Collector(ticker='^GSPC', period='4d')
 df = d._download_main_data()
 df = d._format_df(df)
@@ -189,4 +237,9 @@ df.to_csv('./data/m.csv')
 
 s = Scaler(ticker='^GSPC')
 df = s._normalize(df)
-df.to_csv('./data/normalized.csv')
+
+e = Extractor()
+dfs = e._extract_intervals(df)
+
+for i, df in enumerate(dfs):
+    df.to_csv(f'./data/ext/ext{i}.csv')
