@@ -1,7 +1,10 @@
+import os
 
+import joblib
 import numpy as np
 import pandas as pd
 import pandas_ta as ta
+from sklearn.preprocessing import StandardScaler
 from utils import split_period_into_days
 from yfinance import download
 
@@ -118,7 +121,7 @@ class Preprocessor:
         data['log_close'] = np.log(data['close'])
         data['log_high'] = np.log(data['high'])
         data['log_low'] = np.log(data['low'])
-        data['log_volume'] = np.log(data['volume'])
+        data['log_volume'] = np.log(data['volume'] + 1) # to avoid -inf
 
         data['log_return'] = np.log(df['close'] / df['close'].shift(1))
 
@@ -129,8 +132,49 @@ class Preprocessor:
         return df.dropna()
 
 
+class Scaler:
+    def __init__(self, ticker: str) -> None:
+        self.ticker = ticker
+        self.scaler_path = os.path.join('data', 'scalers', ticker + '.joblib')
 
-d = Collector(ticker='^GSPC', period='1d')
+        if not os.path.exists(self.scaler_path):
+            self.use_existing = False
+            self.scaler = StandardScaler()
+        else:
+            self.use_existing = True
+            self.scaler = self._load_scaler()
+
+    def _load_scaler(self) -> StandardScaler:
+        scaler = None
+        try:
+            scaler = joblib.load(self.scaler_path)
+        except Exception as e:
+            raise RuntimeError(f"Error while loading the scaler: {e}")
+
+        return scaler
+
+
+    def _fit_scaler(self, df: pd.DataFrame) -> None:
+        self.scaler.fit(df)
+        joblib.dump(self.scaler, self.scaler_path)
+
+
+    def _normalize(self, df: pd.DataFrame) -> pd.DataFrame:
+        df_without_dates = df.reset_index(drop=True)
+
+        if not self.use_existing:
+            self._fit_scaler(df_without_dates)
+
+        df_std = self.scaler.transform(df_without_dates)
+        df_std = pd.DataFrame(data=df_std, columns=df_without_dates.columns)
+
+        df_std.index = df.index
+        df_std['close_raw'] = df['close']
+
+        return df_std
+
+
+d = Collector(ticker='^GSPC', period='4d')
 df = d._download_main_data()
 df = d._format_df(df)
 df.to_csv('./data/formatted.csv')
@@ -141,4 +185,8 @@ df = p._add_micro_indexes(df)
 df = p._apply_log_scaling(df)
 df = p._drop_incomplete(df)
 
-df.to_csv('./data/micro.csv')
+df.to_csv('./data/m.csv')
+
+s = Scaler(ticker='^GSPC')
+df = s._normalize(df)
+df.to_csv('./data/normalized.csv')
