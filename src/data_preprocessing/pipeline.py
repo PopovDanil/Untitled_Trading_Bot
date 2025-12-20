@@ -29,17 +29,33 @@ tickers = [
 
 
 class Collector:
+    """
+    Collects data either form file (passing path to the desired .csv) or by downloading from yfinace.
+    """
     def __init__(
         self,
         ticker: str,
         period: str = '59d',
         ) -> None:
+        """
+        Initializes downloader instance for specified ticker.
 
+        Args:
+            ticker (str): ticker name
+            period (str, optional): period (from current moment) for data searching.
+                Must be in format 'Xd'. Defaults to '59d'.
+        """
         self.ticker = ticker
         self.period = period
 
 
     def download_main_data(self) -> pd.DataFrame:
+        """
+        Downloads 1 minute data for each day in the period.
+
+        Returns:
+            pd.DataFrame: stacked dataframe with observations. Date is index column.
+        """
         required_days = split_period_into_days(self.period)
 
         data = pd.DataFrame()
@@ -62,6 +78,15 @@ class Collector:
 
 
     def load_from_file(self, file: str) -> pd.DataFrame:
+        """
+        Loads observations from .csv file.
+
+        Args:
+            file (str): path.
+
+        Returns:
+            pd.DataFrame: stacked dataframe with observations. Date is index column.
+        """
         df = pd.read_csv(file)
         df = df.set_index('date')
         return df
@@ -72,10 +97,10 @@ class Collector:
         Formats columns and index: brings columns to lowercase and formats index to YYYY-MM-DD HH:MM.
 
         Args:
-            df (pd.DataFrame): _description_
+            df (pd.DataFrame): dataframe.
 
         Returns:
-            pd.DataFrame: _description_
+            pd.DataFrame: formatted dataframe. Date is index column.
         """
         new_df = pd.DataFrame()
 
@@ -91,6 +116,15 @@ class Collector:
 
 
     def collect(self, file_path: str | None = None) -> pd.DataFrame:
+        """
+        Loads data. Either downloads (file_path is None) or loads from file.
+
+        Args:
+            file_path (str | None, optional): path to data if downloading is skipped. Defaults to None.
+
+        Returns:
+            pd.DataFrame: loaded data.
+        """
         df = None
         if file_path is not None:
             df = self.load_from_file(file=file_path)
@@ -101,6 +135,9 @@ class Collector:
 
 
 class Preprocessor:
+    """
+    Fills missing values, log-scales, adds micro indexes.
+    """
     def __init__(
             self,
             sma_length: int = 20,
@@ -109,14 +146,33 @@ class Preprocessor:
             macd_slow: int = 26,
             macd_signal: int = 9
         ) -> None:
-        self.sma_length = sma_length    # Simple mean average window size
-        self.rsi_length = rsi_length    # RSI window size
-        self.macd_fast = macd_fast      # MACD
-        self.macd_slow = macd_slow      # MACD
-        self.macd_signal = macd_signal  # MACD
+        """
+        Initializes instance
+
+        Args:
+            sma_length (int, optional): Simple mean average window size. Defaults to 20.
+            rsi_length (int, optional):  RSI window size. Defaults to 14.
+            macd_fast (int, optional): MACD fast. Defaults to 12.
+            macd_slow (int, optional): MACD slow. Defaults to 26.
+            macd_signal (int, optional): MACD signal. Defaults to 9.
+        """
+        self.sma_length = sma_length
+        self.rsi_length = rsi_length
+        self.macd_fast = macd_fast
+        self.macd_slow = macd_slow
+        self.macd_signal = macd_signal
 
 
     def _fill_na(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Filles missing values with mean per feature.
+
+        Args:
+            df (pd.DataFrame): dataframe.
+
+        Returns:
+            pd.DataFrame: dataframe.
+        """
         filled = df.copy()
 
         for column in df.columns:
@@ -130,14 +186,24 @@ class Preprocessor:
 
 
     def _add_micro_indexes(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Adds micro indexes (RSI, SMA, MACD):
+            SMA - Simple Moving Average - average over the window of desired length.
+            RSI - Relative Strength Index - defines trends' power and probability of changes.
+            MACD - Moving Average Convergence/Divergence - shows price oscitation.
+
+        Args:
+            df (pd.DataFrame): dataframe.
+
+        Returns:
+            pd.DataFrame: modified dataframe.
+        """
         data = df.copy()
-        # SMA - Simple Moving Average - average over the window of desired length
+
         data['sma' + str(self.sma_length)] = ta.sma(data['close'], length=self.sma_length)
 
-        # RSI - Relative Strength Index - defines trends' power and probability of changes
         data['rsi' + str(self.rsi_length)] = ta.rsi(data['close'], length=self.rsi_length)
 
-        # MACD - Moving Average Convergence/Divergence - shows price oscitation
         macd = ta.macd(data['close'], fast=self.macd_fast, slow=self.macd_slow, signal=self.macd_signal)
         for col in macd.columns:
             data[col.lower()] = macd[col]
@@ -146,6 +212,15 @@ class Preprocessor:
 
 
     def _apply_log_scaling(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Applies log-scaling for value stability. Adds log-returns.
+
+        Args:
+            df (pd.DataFrame): dataframe.
+
+        Returns:
+            pd.DataFrame: modified dataframe.
+        """
         data = df.copy()
 
         data['log_close'] = np.log(data['close'])
@@ -159,10 +234,28 @@ class Preprocessor:
 
 
     def _drop_incomplete(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Drops incomplete rows (edge missing values after micro indexes windows).
+
+        Args:
+            df (pd.DataFrame): dataframe.
+
+        Returns:
+            pd.DataFrame: modified dataframe.
+        """
         return df.dropna()
 
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Combined operations.
+
+        Args:
+            df (pd.DataFrame): dataframe.
+
+        Returns:
+            pd.DataFrame: modified dataframe.
+        """
         result = self._fill_na(df)
         result = self._apply_log_scaling(result)
         result = self._add_micro_indexes(result)
@@ -171,19 +264,38 @@ class Preprocessor:
 
 
 class Scaler:
+    """
+    Normalizes features.
+    """
     def __init__(self, ticker: str) -> None:
+        """
+        Initializes instance.
+
+        Args:
+            ticker (str): ticker name
+        """
         self.ticker = ticker
         self.scaler_path = os.path.join('data', 'scalers', ticker + '.joblib')
 
+        # Check if we have already used scaler for ticker. If no - initialize a new one.
         if not os.path.exists(self.scaler_path):
             self.use_existing = False
             self.scaler = StandardScaler()
         else:
             self.use_existing = True
-            self.scaler = self._load_scaler()
+            self.scaler = self._load_scaler() # load existing
 
 
     def _load_scaler(self) -> StandardScaler:
+        """
+        Loads found scaler.
+
+        Raises:
+            RuntimeError: joblib failure.
+
+        Returns:
+            StandardScaler: loaded scaler.
+        """
         scaler = None
         try:
             scaler = joblib.load(self.scaler_path)
@@ -194,13 +306,29 @@ class Scaler:
 
 
     def _fit_scaler(self, df: pd.DataFrame) -> None:
+        """
+        Fits new scaler.
+
+        Args:
+            df (pd.DataFrame): dataframe.
+        """
         self.scaler.fit(df)
         joblib.dump(self.scaler, self.scaler_path)
 
 
     def _normalize(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Applies normalization.
+
+        Args:
+            df (pd.DataFrame): dataframe.
+
+        Returns:
+            pd.DataFrame: normalized dataframe.
+        """
         df_without_dates = df.reset_index(drop=True)
 
+        # Can be skipped, since in pipeline scaler will be pre-fitted.
         if not self.use_existing:
             self._fit_scaler(df_without_dates)
 
@@ -214,6 +342,15 @@ class Scaler:
 
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        API.
+
+        Args:
+            df (pd.DataFrame): dataframe.
+
+        Returns:
+            pd.DataFrame: dataframe.
+        """
         result = self._normalize(df)
         return result
 
