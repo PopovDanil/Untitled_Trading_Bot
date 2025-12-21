@@ -28,3 +28,17 @@ def split_period_into_days(period: str = '1d') -> list[tuple[datetime, datetime]
         current += timedelta(days=1)
 
     return days
+
+
+def extract_ticker_from_path(path: str) -> str:
+    """
+    Extracts ticker name from path (windows notation). File should be named in format TICKER_nminute.csv.
+
+    Args:
+        path (str): path to data
+
+    Returns:
+        str: ticker name.
+    """
+    parts = path.split('\\')
+    return parts[-1].split('_')[0]

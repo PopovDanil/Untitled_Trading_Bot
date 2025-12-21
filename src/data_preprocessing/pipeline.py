@@ -1,13 +1,18 @@
+import multiprocessing as mp
 import os
 import random
+from typing import Callable
+from uuid import uuid4
 
 import joblib
 import numpy as np
 import pandas as pd
 import pandas_ta as ta
 from sklearn.preprocessing import StandardScaler
-from utils import split_period_into_days
+from tqdm import tqdm
 from yfinance import download
+
+from data_preprocessing.utils import extract_ticker_from_path, split_period_into_days
 
 tickers = [
     "ES=F",   # E-Mini S&P 500
@@ -205,6 +210,9 @@ class Preprocessor:
         data['rsi' + str(self.rsi_length)] = ta.rsi(data['close'], length=self.rsi_length)
 
         macd = ta.macd(data['close'], fast=self.macd_fast, slow=self.macd_slow, signal=self.macd_signal)
+        if macd is None:
+            return data
+
         for col in macd.columns:
             data[col.lower()] = macd[col]
 
@@ -222,13 +230,15 @@ class Preprocessor:
             pd.DataFrame: modified dataframe.
         """
         data = df.copy()
+        eps = 1e-8 # to avoid -inf
 
-        data['log_close'] = np.log(data['close'])
-        data['log_high'] = np.log(data['high'])
-        data['log_low'] = np.log(data['low'])
-        data['log_volume'] = np.log(data['volume'] + 1) # to avoid -inf
+        data['log_close'] = np.log(data['close'] + eps)
+        data['log_high'] = np.log(data['high'] + eps)
+        data['log_low'] = np.log(data['low'] + eps)
+        data['log_volume'] = np.log(data['volume'] + eps)
 
-        data['log_return'] = np.log(df['close'] / df['close'].shift(1))
+        ratio = df['close'] / (df['close'].shift(1) + eps)
+        data['log_return'] = np.log(ratio.replace(np.nan, 0) + eps)
 
         return data
 
@@ -248,7 +258,7 @@ class Preprocessor:
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Combined operations.
+        Combined operations: fills NaNs, log-scaling, micro indexes + drop edges.
 
         Args:
             df (pd.DataFrame): dataframe.
@@ -275,7 +285,7 @@ class Scaler:
             ticker (str): ticker name
         """
         self.ticker = ticker
-        self.scaler_path = os.path.join('data', 'scalers', ticker + '.joblib')
+        self.scaler_path = os.path.join('.', 'data', 'scalers', ticker + '.joblib')
 
         # Check if we have already used scaler for ticker. If no - initialize a new one.
         if not os.path.exists(self.scaler_path):
@@ -360,9 +370,19 @@ class Extractor:
             window_size: int = 10,
             pre_session_size: int = 90,
             after_session_interval: int = 60,
-            min_volatility: float = 0.05,
-            scaling_factor: float = 5
+            min_volatility: float = 0.03,
+            scaling_factor: float = 2.5
         ) -> None:
+        """
+        Initializes extractor instance.
+
+        Args:
+            window_size (int, optional): size of high-volatile window. Defaults to 10.
+            pre_session_size (int, optional): number of observations before window. Defaults to 90.
+            after_session_interval (int, optional): number of observations after window. Defaults to 60.
+            min_volatility (float, optional): min volatility level considered as high. Defaults to 0.03.
+            scaling_factor (float, optional): filter scaler. Defaults to 2.5.
+        """
         self.window_size = window_size
         self.pre_session_size = pre_session_size
         self.after_session_interval = after_session_interval
@@ -371,11 +391,29 @@ class Extractor:
 
 
     def _calculate_volatility(self, df: pd.DataFrame) -> pd.Series:
+        """
+        Calculates volatility.
+
+        Args:
+            df (pd.DataFrame): dataframe
+
+        Returns:
+            pd.Series: series with volatilizes windows
+        """
         close = df['close']
         return abs(close.shift(-self.window_size) - close) / close
 
 
     def _extract_intervals(self, data: pd.DataFrame) -> list[pd.DataFrame]:
+        """
+        Extracts high-volatile intervals. Choses sessions and checks filtering.
+
+        Args:
+            data (pd.DataFrame): dataframe
+
+        Returns:
+            list[pd.DataFrame]: list of extracted sessions.
+        """
         df = data.reset_index(drop=True)
 
         chosen_sessions = []
@@ -404,19 +442,49 @@ class Extractor:
 
 
     def transform(self, df: pd.DataFrame) -> list[pd.DataFrame]:
+        """
+        API part.
+
+        Args:
+            df (pd.DataFrame): dataframe
+
+        Returns:
+            list[pd.DataFrame]: list of extracted intervals.
+        """
         result = self._extract_intervals(df)
         return result
 
 
 class Splitter:
+    """
+    Splits single dataframe into multiple ones by day and splits into train and test subsets.
+    """
     def __init__(self, ticker: str, save: bool = True, test_size: float = 0.2, random_state: int = 1) -> None:
+        """
+        Initializes instance.
+
+        Args:
+            ticker (str): ticker name.
+            save (bool, optional): flag for saving temporary splitted frames. Defaults to True.
+            test_size (float, optional): size (fraction) of test dataset. Defaults to 0.2.
+            random_state (int, optional): random state. Defaults to 1.
+        """
         self.ticker = ticker
         self.save = save
         self.test_size = test_size
         random.seed(random_state)
 
 
-    def _split(self, df: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    def split(self, df: pd.DataFrame) -> dict[str, pd.DataFrame]:
+        """
+        Splits dataset by days.
+
+        Args:
+            df (pd.DataFrame): dataframe.
+
+        Returns:
+            dict[str, pd.DataFrame]: dictionary {day as string: dataframe}.
+        """
         df_ = df.reset_index(drop=True)
         df_['date'] = pd.to_datetime(df.index)
 
@@ -431,58 +499,87 @@ class Splitter:
         return result
 
 
-    def _train_test_split(self, splitted: dict) -> tuple[dict, dict]:
-        observations = list(splitted.keys())
-        random.shuffle(observations)
+    def train_test_split(self, splitted: list[pd.DataFrame]) -> tuple[list, list]:
+        """
+        Shuffles and splits list into two subsets.
 
-        test_size = int(len(observations) * self.test_size)
+        Args:
+            splitted (list[pd.DataFrame]): _description_
 
-        test_keys = observations[:test_size]
-        train_keys = observations[test_size:]
+        Returns:
+            tuple[list, list]: _description_
+        """
+        random.shuffle(splitted)
 
-        train = {k: splitted[k] for k in train_keys}
-        test = {k: splitted[k] for k in test_keys}
+        test_size = int(len(splitted) * self.test_size)
 
-        return train, test
+        test = splitted[:test_size]
+        train = splitted[test_size:]
 
-
-    def transform(self, df: pd.DataFrame) -> tuple[dict[str, pd.DataFrame], dict[str, pd.DataFrame]]:
-        result = self._split(df)
-        train, test = self._train_test_split(result)
         return train, test
 
 
 class Pipeline:
+    """
+    Main data processing pipeline. One per ticker.
+    """
     def __init__(self, ticker: str, file_path: str | None = None) -> None:
+        """
+        Initializes instance.
+
+        Args:
+            ticker (str): ticker name.
+            file_path (str | None, optional): optional path to file. Defaults to None.
+        """
         self.ticker = ticker
         self.file_path = file_path
 
-        self.collector = Collector(ticker=self.ticker, period='10d')
+        self.collector = Collector(ticker=self.ticker, period='59d')
         self.preprocessor = Preprocessor()
         self.splitter = Splitter(ticker=self.ticker)
         self.scaler = Scaler(ticker=self.ticker)
         self.extractor = Extractor()
 
 
-    def _fit_scaler(self, df: dict[str, pd.DataFrame]) -> None:
+    def _fit_scaler(self, frames: list[pd.DataFrame]) -> None:
+        """
+        Stacks train dataset and fits StandardScaler.
+
+        Args:
+            frames (list[pd.DataFrame]): list of ready dataframes.
+        """
         stacked = pd.DataFrame()
 
-        for date in df.keys():
-            stacked = pd.concat([stacked, df[date]], axis=0)
+        for df in frames:
+            stacked = pd.concat([stacked, df], axis=0)
 
         self.scaler.transform(stacked)
 
 
     def process_data(self) -> None:
+        """
+        Starts pipeline processing.
+        """
         df = self.collector.collect(self.file_path)
 
-        df.to_csv('./data/after_collection.csv')
+        splitted = self.splitter.split(df)
 
-        df = self.preprocessor.transform(df)
+        high_volatile_intervals = []
+        for day in splitted.keys():
+            df = splitted[day]
 
-        df.to_csv('./data/after_preprocessor.csv')
+            df = self.preprocessor.transform(df)
 
-        train, test = self.splitter.transform(df)
+            intervals = self.extractor.transform(df)
+            high_volatile_intervals.extend(intervals)
+
+            for interval in intervals:
+                interval.to_csv(f'./data/tmp/{self.ticker}_{uuid4()}.csv')
+
+        if len(high_volatile_intervals) == 0:
+            return
+
+        train, test = self.splitter.train_test_split(high_volatile_intervals)
 
         self._fit_scaler(train)
 
@@ -490,10 +587,74 @@ class Pipeline:
             src = train if i == 1 else test
             name = 'train' if i == 1 else 'test'
 
-            for day in src.keys():
-                obs = src[day]
-                obs_std = self.scaler.transform(obs)
-                high_volatile_intervals = self.extractor.transform(obs_std)
+            for df in src:
+                df = self.scaler.transform(df)
+                df.to_csv(f'./data/{name}/{uuid4()}.csv')
 
-                for idx, interval in enumerate(high_volatile_intervals):
-                    interval.to_csv(f'./data/{name}/{self.ticker}_{day}_{idx}.csv')
+
+def worker(ticker: str, file_path: str | None) -> None:
+    """
+    Initializes a separate pipeline for each ticker for multiprocessing.
+
+    Args:
+        ticker (str): ticker name.
+        file_path (str | None): path to file with data. If data should be downloaded must be kept as None.
+    """
+    pipeline = Pipeline(ticker=ticker, file_path=file_path)
+    pipeline.process_data()
+
+
+def start_worker(args: list) -> Callable:
+    """
+    Starts worker.
+
+    Args:
+        args (list): list of any args
+
+    Returns:
+        Callable: initialized worker
+    """
+    return worker(*args)
+
+
+def _start_pipeline(tasks: list[tuple]) -> None:
+    """
+    Starts data processing.
+
+    Args:
+        tasks (list[tuple]): list of tuples (ticker, path | None).
+    """
+    processes = mp.cpu_count() - 1
+    with mp.Pool(processes) as p:
+        list(
+            tqdm(
+                p.imap_unordered(start_worker, tasks),
+                total=len(tasks),
+                desc="Processing tickers"
+            )
+        )
+
+
+def download_data() -> None:
+    """
+    Starts data processing pipeline with downloading. Uses as much cores as possible.
+    """
+    tasks = [(ticker, None) for ticker in tickers]
+    _start_pipeline(tasks=tasks)
+
+
+def load_dataset(path_to_dataset: str = './data/dataset') -> None:
+    """
+    Starts data processing pipeline with ready dataset. Uses as much cores as possible.
+
+    Args:
+        path_to_dataset (str, optional): path. Defaults to './data/dataset'.
+    """
+    tasks = []
+    for file in os.listdir(path=path_to_dataset):
+        path = os.path.join(path_to_dataset, file)
+
+        ticker = extract_ticker_from_path(path)
+        tasks.append((ticker, path))
+
+    _start_pipeline(tasks=tasks)
