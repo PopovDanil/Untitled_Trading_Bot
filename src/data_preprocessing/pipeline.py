@@ -185,7 +185,7 @@ class Preprocessor:
                 continue
 
             mean = df[column].mean()
-            filled[column] = filled[column].fillna(mean)
+            filled[column] = filled[column].fillna(method='ffill') # or use interpolation
 
         return filled
 
@@ -370,8 +370,8 @@ class Extractor:
             window_size: int = 10,
             pre_session_size: int = 90,
             after_session_interval: int = 60,
-            min_volatility: float = 0.03,
-            scaling_factor: float = 2.5
+            min_volatility: float = 0.02,
+            scaling_factor: float = 1.0
         ) -> None:
         """
         Initializes extractor instance.
@@ -380,8 +380,8 @@ class Extractor:
             window_size (int, optional): size of high-volatile window. Defaults to 10.
             pre_session_size (int, optional): number of observations before window. Defaults to 90.
             after_session_interval (int, optional): number of observations after window. Defaults to 60.
-            min_volatility (float, optional): min volatility level considered as high. Defaults to 0.03.
-            scaling_factor (float, optional): filter scaler. Defaults to 2.5.
+            min_volatility (float, optional): min volatility level considered as high. Defaults to 0.02.
+            scaling_factor (float, optional): filter scaler. Defaults to 1.0.
         """
         self.window_size = window_size
         self.pre_session_size = pre_session_size
@@ -415,6 +415,8 @@ class Extractor:
             list[pd.DataFrame]: list of extracted sessions.
         """
         df = data.reset_index(drop=True)
+
+        df.to_csv(f'./data/tmp/{uuid4()}.csv')
 
         chosen_sessions = []
         last_used = float('-inf')
@@ -493,8 +495,8 @@ class Splitter:
             observations = observations.set_index('date')
             result[str(day)] = observations
 
-            if self.save:
-                observations.to_csv(f'./data/tmp/{self.ticker}_{day}.csv')
+            # if self.save:
+            #     observations.to_csv(f'./data/tmp/{self.ticker}_{day}.csv')
 
         return result
 
