@@ -184,10 +184,34 @@ class Preprocessor:
             if column == 'date':
                 continue
 
-            mean = df[column].mean()
+            # mean = df[column].mean()
             filled[column] = filled[column].fillna(method='ffill') # or use interpolation
 
         return filled
+
+
+    def _SMA(self, data: pd.Series) -> pd.Series:
+        """
+        Adds SMA (simple moving average).
+
+        Args:
+            data (pd.Series): pandas series with 'close' column.
+
+        Returns:
+            pd.Series: series with added SMA.
+        """
+        df = pd.concat([pd.Series([data[0]] * self.sma_length), data])
+        sma = df.rolling(window=self.sma_length).mean()
+
+        return sma[self.sma_length:]
+
+
+    def _RSI(self, data: pd.Series) -> pd.Series:
+        pass
+
+
+    def _MACD(self, data: pd.Series) -> pd.Series:
+        pass
 
 
     def _add_micro_indexes(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -205,7 +229,7 @@ class Preprocessor:
         """
         data = df.copy()
 
-        data['sma' + str(self.sma_length)] = ta.sma(data['close'], length=self.sma_length)
+        data['sma' + str(self.sma_length)] = self._SMA(data['close'])
 
         data['rsi' + str(self.rsi_length)] = ta.rsi(data['close'], length=self.rsi_length)
 
