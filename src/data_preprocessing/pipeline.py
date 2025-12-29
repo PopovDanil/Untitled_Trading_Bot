@@ -7,7 +7,6 @@ from uuid import uuid4
 import joblib
 import numpy as np
 import pandas as pd
-import pandas_ta as ta
 from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
 from yfinance import download
@@ -200,19 +199,60 @@ class Preprocessor:
         Returns:
             pd.Series: series with added SMA.
         """
-        df = pd.concat([pd.Series([data[0]] * self.sma_length), data])
-        sma = df.rolling(window=self.sma_length).mean()
+        sma = data.rolling(window=self.sma_length).mean()
 
         return sma[self.sma_length:]
 
 
     def _RSI(self, data: pd.Series) -> pd.Series:
-        pass
+        """
+        Adds RSI (relative strength index).
+
+        Args:
+            data (pd.Series): pandas series with 'close' column.
+
+        Returns:
+            pd.Series: series with added RSI.
+        """
+        delta = data.diff()
+
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+
+        avg_gain = gain.ewm(alpha=1 / self.rsi_length, min_periods=self.rsi_length, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1 / self.rsi_length, min_periods=self.rsi_length, adjust=False).mean()
+
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+
+        return rsi[self.rsi_length:]
 
 
     def _MACD(self, data: pd.Series) -> pd.Series:
-        pass
+        """
+        Computes MACD, Signal line, and Histogram.
 
+        Args:
+            data (pd.Series): pandas series with 'close' column.
+
+        Returns:
+            pd.DataFrame: columns [macd, signal, hist]
+        """
+        ema_fast = data.ewm(span=self.macd_fast, adjust=False).mean()
+        ema_slow = data.ewm(span=self.macd_slow, adjust=False).mean()
+
+        macd = ema_fast - ema_slow
+        macd_signal = macd.ewm(span=self.macd_signal, adjust=False).mean()
+        macd_hist = macd - macd_signal
+
+        return pd.DataFrame(
+            {
+                "macd": macd,
+                "signal": macd_signal,
+                "hist": macd_hist,
+            },
+            index=data.index,
+    )
 
     def _add_micro_indexes(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -231,9 +271,9 @@ class Preprocessor:
 
         data['sma' + str(self.sma_length)] = self._SMA(data['close'])
 
-        data['rsi' + str(self.rsi_length)] = ta.rsi(data['close'], length=self.rsi_length)
+        data['rsi' + str(self.rsi_length)] = self._RSI(data['close'])
 
-        macd = ta.macd(data['close'], fast=self.macd_fast, slow=self.macd_slow, signal=self.macd_signal)
+        macd = self._MACD(data['close'])
         if macd is None:
             return data
 
@@ -440,7 +480,7 @@ class Extractor:
         """
         df = data.reset_index(drop=True)
 
-        df.to_csv(f'./data/tmp/{uuid4()}.csv')
+        # df.to_csv(f'./data/tmp/{uuid4()}.csv')
 
         chosen_sessions = []
         last_used = float('-inf')
@@ -599,8 +639,8 @@ class Pipeline:
             intervals = self.extractor.transform(df)
             high_volatile_intervals.extend(intervals)
 
-            for interval in intervals:
-                interval.to_csv(f'./data/tmp/{self.ticker}_{uuid4()}.csv')
+            # for interval in intervals:
+            #     interval.to_csv(f'./data/tmp/{self.ticker}_{uuid4()}.csv')
 
         if len(high_volatile_intervals) == 0:
             return
