@@ -2,9 +2,9 @@ import keras
 import tensorflow as tf
 
 
-class LSTM(tf.Module):
+class CNN(tf.Module):
     """
-    Creates sequential model consisting of LSTMs.
+    Creates sequential model consisting of CNNs.
     """
     def __init__(
         self,
@@ -14,7 +14,7 @@ class LSTM(tf.Module):
         hidden_layers: int = 32,
         hidden_units: int = 32,
         lr: float = 1e-5,
-        dropout: float = 0.2,
+        kernel_size: int = 3,
         clipnorm: float | None = None,
         name = None
         )-> None:
@@ -25,10 +25,10 @@ class LSTM(tf.Module):
             timestamps (int, optional): number of observations passed together. Defaults to 3.
             features (int, optional): number of features. Defaults to 6.
             output_shape (int, optional): output shape. Defaults to 3.
-            hidden_layers (int, optional): number of LSTMs in model. Defaults to 32.
-            hidden_units (int, optional): dimensionality of LSTMs outputs. Defaults to 32.
+            hidden_layers (int, optional): number of CNNs in model. Defaults to 32.
+            hidden_units (int, optional): dimensionality of CNNs outputs, doubles with each layer. Defaults to 32.
             lr (float, optional): learning rate. Defaults to 1e-5.
-            dropout (float, optional): dropout. Defaults to 0.2.
+            kernel_size (int, optional): size of the convolution window. Defaults to 3.
             clipnorm (float | None, optional): gradient clipping. Defaults to None.
             name (_type_, optional): model name. Defaults to None.
         """
@@ -37,16 +37,17 @@ class LSTM(tf.Module):
         self.model = keras.Sequential([
             keras.Input(shape=(timestamps, features)),
             *[
-                keras.layers.LSTM(
-                    hidden_units,
-                    kernel_initializer='orthogonal',
-                    dropout=dropout,
-                    return_sequences=True,
-                    implementation=2
+                keras.layers.Conv1D(
+                    filters=(hidden_units*(2**i)),
+                    kernel_size=kernel_size,
+                    padding='same',
+                    activation='relu',
+                    kernel_initializer='he_uniform'
                 )
-                for _ in range(hidden_layers)
+                for i in range(hidden_layers)
             ],
-            keras.layers.GRU(max(hidden_units // 2, 4)),
+            keras.layers.GlobalAveragePooling1D(),
+            keras.layers.Dense(hidden_units*(2**(hidden_layers-1)), activation='relu'),
             keras.layers.BatchNormalization(),
             keras.layers.Dense(output_shape, activation='linear', kernel_initializer='he_uniform'),
         ])

@@ -66,7 +66,7 @@ class Collector:
         for (start, end) in required_days:
             df = download(tickers=self.ticker, start=start, end=end, interval='1m', multi_level_index=False, progress=False)
             if df is None:
-                print(f'Missing data for {start}!')
+                tqdm.write(f'Missing data for {start}!')
                 continue
 
             df['date'] = [date.to_pydatetime() for date in df.index]
@@ -184,7 +184,7 @@ class Preprocessor:
                 continue
 
             # mean = df[column].mean()
-            filled[column] = filled[column].fillna(method='ffill') # or use interpolation
+            filled[column] = filled[column].ffill() # or use interpolation
 
         return filled
 
@@ -434,8 +434,8 @@ class Extractor:
             window_size: int = 10,
             pre_session_size: int = 90,
             after_session_interval: int = 60,
-            min_volatility: float = 0.02,
-            scaling_factor: float = 1.0
+            min_volatility: float = 0.05,
+            scaling_factor: float = 5.0
         ) -> None:
         """
         Initializes extractor instance.
@@ -639,10 +639,11 @@ class Pipeline:
             intervals = self.extractor.transform(df)
             high_volatile_intervals.extend(intervals)
 
-            # for interval in intervals:
-            #     interval.to_csv(f'./data/tmp/{self.ticker}_{uuid4()}.csv')
+            for interval in intervals:
+                interval.to_csv(f'./data/tmp/{self.ticker}_{uuid4()}.csv')
 
         if len(high_volatile_intervals) == 0:
+            tqdm.write(f'No high volatile intervals for {self.ticker}!')
             return
 
         train, test = self.splitter.train_test_split(high_volatile_intervals)
@@ -709,12 +710,13 @@ def download_data() -> None:
     _start_pipeline(tasks=tasks)
 
 
-def load_dataset(path_to_dataset: str = './data/dataset') -> None:
+def load_dataset(path_to_dataset: str = './data/datasets/dataset_1') -> None:
     """
     Starts data processing pipeline with ready dataset. Uses as much cores as possible.
+    Primary dataset is https://www.kaggle.com/datasets/debashis74017/algo-trading-data-nifty-100-data-with-indicators.
 
     Args:
-        path_to_dataset (str, optional): path. Defaults to './data/dataset'.
+        path_to_dataset (str, optional): path. Defaults to './data/datasets/dataset_1'.
     """
     tasks = []
     for file in os.listdir(path=path_to_dataset):

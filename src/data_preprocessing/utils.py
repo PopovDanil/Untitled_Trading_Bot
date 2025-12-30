@@ -32,7 +32,7 @@ def split_period_into_days(period: str = '1d') -> list[tuple[datetime, datetime]
 
 def extract_ticker_from_path(path: str) -> str:
     """
-    Extracts ticker name from path (windows notation). File should be named in format TICKER_nminute.csv.
+    Extracts ticker name from path (linux notation). File should be named in format TICKER_nminute.csv.
 
     Args:
         path (str): path to data
@@ -40,5 +40,5 @@ def extract_ticker_from_path(path: str) -> str:
     Returns:
         str: ticker name.
     """
-    parts = path.split('\\')
+    parts = path.split('/')
     return parts[-1].split('_')[0]

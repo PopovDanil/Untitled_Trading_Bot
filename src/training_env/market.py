@@ -1,5 +1,4 @@
 import random
-from typing import List, SupportsFloat, Tuple
 
 import gymnasium as gym
 import numpy as np
@@ -8,19 +7,58 @@ from gymnasium import spaces
 
 
 class Market(gym.Env):
-    def __init__(self, training_files: List[str], initial_cash: np.float32, slippage: np.float32, broker_fee: np.float32, lam: float = 0.01, reward_scaler: float = 100.0, seed: int = 123):
-        super().__init__()
-        self.files = training_files
+    """
+    Simulates Stock market. Includes slippage and broker fee.
+    """
+    def __init__(
+        self,
+        training_files: list[str],
+        features: list[str],
+        initial_cash: np.float32,
+        slippage: np.float32,
+        broker_fee: np.float32,
+        lam: float = 0.01,
+        reward_scaler: float = 100.0,
+        seed: int = 123
+        ) -> None:
+        """
+        Initializes a new market instance.
 
+        Args:
+            training_files (list[str]): list of paths to train data.
+            features (list[str]): list of features used during training.
+            initial_cash (np.float32): starting amount of money (dollars).
+            slippage (np.float32): slippage.
+            broker_fee (np.float32): broker's fee.
+            lam (float, optional): punishment scaler for holding outside position. Defaults to 0.01.
+            reward_scaler (float, optional): scaling coefficient. Defaults to 100.0.
+            seed (int, optional): random seed. Defaults to 123.
+        """
         random.seed(seed)
+        super().__init__()
 
-        # observations - open, high, low, close, volume (already standardized)
+        self.files = training_files
+        self.features = features
         self._get_observations(files=training_files)
 
-        # open, high, low, close, volume, position, current_step, remaining_time, cash
-        self.observation_space = spaces.Box(low=float('-inf'), high=float('inf'), shape=(self.observation_shape + 4,), dtype=np.float32)
+        # Describes properties of training data
+        self.observation_space = spaces.Box(
+            low=float('-inf'),
+            high=float('inf'),
+            shape=(self.observation_shape + 4,),
+            dtype=np.float32
+        )
 
-        # go long - >0, short - <0, hold = 0, value - amount of current cash/futures to spend, second - 0 - wait, 1 - close position
+        # Hybrid action space meaning:
+        # First component - continuous
+        # go long - >0,
+        # short - <0,
+        # hold = 0,
+        # value - amount of current cash/futures to spend
+        # -----------------------------------------------
+        # Second component - discrete
+        # 0 - wait,
+        # 1 - close position
         self.action_space = spaces.Tuple([
             spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32),
             spaces.Discrete(2)
@@ -34,7 +72,7 @@ class Market(gym.Env):
 
         self.slippage = slippage
         self.fee = broker_fee
-        self.lam = lam # punishment scaler for holding outside position
+        self.lam = lam
 
         self.max_reward = 100.0
         self.min_reward = -100.0
@@ -43,19 +81,42 @@ class Market(gym.Env):
         self.position = 0 # 0 - waiting, 1 - long, -1 - short
         self.entry_price = 0.0
 
-        self.current_price = self.observations.iloc[0]['close']
+        self.current_price = self.observations.iloc[0]['close_raw']
         self.previous_price = self.current_price
         self.current_episode = 0
         self.current_step = -1
 
-    def _reorder_obs(self):
+
+    def _reorder_obs(self) -> None:
+        """
+        Randomly shuffles training files.
+        """
         random.shuffle(self.files)
 
-    def _load_file(self, file: str) -> pd.DataFrame:
-        data = pd.read_csv(file, index_col=0)
-        return data
 
-    def _get_observations(self, files: List[str]):
+    def _load_file(self, file: str) -> pd.DataFrame:
+        """
+        Loads df from .csv file and resets index column.
+
+        Args:
+            file (str): path.
+
+        Returns:
+            pd.DataFrame: df with selected features.
+        """
+        data = pd.read_csv(file, index_col=0)
+        data = data.reset_index()
+        return data[self.features]
+
+
+    def _get_observations(self, files: list[str]) -> None:
+        """
+        Initially loads the first training df and set episode length, number of training
+        examples, feature names (second time).
+
+        Args:
+            files (list[str]): list of files.
+        """
         self.observations = self._load_file(files[0])
 
         # exclude close_raw
@@ -67,7 +128,14 @@ class Market(gym.Env):
         self.data_columns = self.observations.columns.to_list()
         self.data_columns.remove('close_raw')
 
-    def _get_next_obs(self) -> Tuple[np.ndarray, bool]:
+
+    def _get_next_obs(self) -> tuple[np.ndarray, bool]:
+        """
+        Get the next observation in current episode.
+
+        Returns:
+            tuple[np.ndarray, bool]: observation data and stopping flag.
+        """
         previous = self.current_step
         obs = np.zeros(shape=(self.observation_shape), dtype=np.float32)
         self.current_step = (self.current_step + 1) % self.episode_len
@@ -96,12 +164,12 @@ class Market(gym.Env):
 
         obs = np.hstack([obs, np.array([position, norm_step, norm_remaining])], dtype=np.float32)
 
-        print(f'Current file - {self.current_episode} | obs - {obs} |')
+        # print(f'Current file - {self.current_episode} | obs - {obs} |')
 
         return obs, done
 
-    def step(self, action: Tuple) -> Tuple[np.ndarray, SupportsFloat, bool, bool, dict]:
 
+    def step(self, action: tuple) -> tuple[np.ndarray, float, bool, bool, dict]:
         pnl = 0.0
         ratio, close = action
 
@@ -173,7 +241,8 @@ class Market(gym.Env):
         reward = np.clip(reward, self.min_reward, self.max_reward)
         return current_obs, reward, truncated, terminated, info
 
-    def reset(self, *args, **kwargs) -> Tuple[np.ndarray, dict]:
+
+    def reset(self, *args, **kwargs) -> tuple[np.ndarray, dict]:
         self.cash = self.initial_cash
         self.pnl = 0.0
         self.qty = 0.0

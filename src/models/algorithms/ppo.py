@@ -6,32 +6,32 @@ from typing import List, Tuple
 import gymnasium as gym
 import matplotlib.pyplot as plt
 import numpy as np
-import psutil
 import tensorflow as tf
+from tqdm import tqdm
+
 from models.neural_networks.lstm import LSTM
 from settings import DIR
-from tqdm import tqdm
 
 DEBUG = True
 
 
-class RecourseMonitor:
-    def __init__(self):
-        super().__init__()
-        self.batch_count = 0
+# class RecourseMonitor:
+#     def __init__(self) -> None:
+#         super().__init__()
+#         self.batch_count = 0
 
-    def get_info(self):
-        self.batch_count += 1
-        cpu_percent = psutil.cpu_percent()
-        memory = psutil.virtual_memory()
+#     def get_info(self) -> None:
+#         self.batch_count += 1
+#         cpu_percent = psutil.cpu_percent()
+#         memory = psutil.virtual_memory()
 
-        print(f"Batch {self.batch_count}: "
-                f"CPU: {cpu_percent}%, "
-                f"RAM: {memory.percent}%")
+#         tqdm.write(f"Batch {self.batch_count}: "
+#                 f"CPU: {cpu_percent}%, "
+#                 f"RAM: {memory.percent}%")
 
-        if tf.config.experimental.list_physical_devices('GPU'):
-            gpu_stats = tf.config.experimental.get_memory_info('GPU:0')
-            print(f"GPU Memory: {gpu_stats['current'] / 1024**2:.0f}MB")
+#         if tf.config.experimental.list_physical_devices('GPU'):
+#             gpu_stats = tf.config.experimental.get_memory_info('GPU:0')
+#             tqdm.write(f"GPU Memory: {gpu_stats['current'] / 1024**2:.0f}MB")
 
 
 class PPOAgent:
@@ -42,6 +42,7 @@ class PPOAgent:
             memory_size: int = 3,
             hidden_layers: int = 16,
             hidden_units: int = 32,
+            dropout: float = 0.2,
             actor_lr: float | np.float32 = 1e-4,
             critic_lr: float | np.float32 = 5e-4,
             advantage_type: str = 'gae',
@@ -63,8 +64,25 @@ class PPOAgent:
 
         self.actor_lr = actor_lr
         self.critic_lr = critic_lr
-        self.actor = LSTM(timestamps=memory_size, features=num_features, output_shape=3, hidden_layers=hidden_layers, hidden_units=hidden_units, lr=actor_lr)
-        self.critic = LSTM(timestamps=memory_size, features=num_features, output_shape=1, hidden_layers=hidden_layers, hidden_units=hidden_units, lr=critic_lr)
+
+        self.actor = LSTM(
+            timestamps=memory_size,
+            features=num_features,
+            dropout=dropout,
+            output_shape=3,
+            hidden_layers=hidden_layers,
+            hidden_units=hidden_units,
+            lr=actor_lr
+        )
+        self.critic = LSTM(
+            timestamps=memory_size,
+            features=num_features,
+            dropout=dropout,
+            output_shape=1,
+            hidden_layers=hidden_layers,
+            hidden_units=hidden_units,
+            lr=critic_lr
+        )
 
         self.c1 = c1
         self.c2 = c2
@@ -75,12 +93,14 @@ class PPOAgent:
         self.LOG_STD_MIN = -10.0
         self.LOG_STD_MAX = 2.0
 
-        self.recourse_monitor = RecourseMonitor()
+        # self.recourse_monitor = RecourseMonitor()
+
 
     def save(self, save_path: str = 'models_params') -> None:
         intermediate_path = os.path.join('models', 'algorithms')
         self.actor.save(path=os.path.join(DIR, intermediate_path, save_path, 'ppo', 'actor.keras'))
         self.critic.save(path=os.path.join(DIR, intermediate_path, save_path, 'ppo', 'critic.keras'))
+
 
     def act(self, observation: np.ndarray) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
         mixed = self.actor.forward(observation.reshape(1, *observation.shape))
@@ -95,10 +115,10 @@ class PPOAgent:
 
         return cont_log_probs, logits_disc, action_cont, action_disc, value
 
-    @tf.function
+
     def compute_cont_log_probs(self, actions: np.ndarray | tf.Tensor, mean: tf.Tensor, log_std: tf.Tensor) -> tf.Tensor:
 
-        actions = tf.reshape(actions, shape=(actions.shape[0], 1))
+        actions = tf.reshape(actions, shape=(tf.shape(actions)[0], 1))
 
         log_std_clipped = tf.clip_by_value(log_std, self.LOG_STD_MIN, self.LOG_STD_MAX)
         std = tf.math.exp(log_std) + self.EPS
@@ -113,14 +133,14 @@ class PPOAgent:
         jacobian = tf.math.log(1.0 - actions_clipped ** 2 + self.EPS)
         cont_log_probs = cont_log_probs - jacobian
 
-        # tf.debugging.check_numerics(cont_log_probs, 'NaNs were detected in compute_cont_log_probs')
+        tf.debugging.check_numerics(cont_log_probs, 'NaNs were detected in compute_cont_log_probs')
 
         return cont_log_probs
 
-    @tf.function
+
     def compute_cont_action(self, mean: tf.Tensor, log_std: tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
-        # tf.debugging.check_numerics(mean, message='NaNs were detected in compute_cont_action')
-        # tf.debugging.check_numerics(log_std, message='NaNs were detected in compute_cont_action')
+        tf.debugging.check_numerics(mean, message='NaNs were detected in compute_cont_action')
+        tf.debugging.check_numerics(log_std, message='NaNs were detected in compute_cont_action')
 
         log_std_clipped = tf.clip_by_value(log_std, self.LOG_STD_MIN, self.LOG_STD_MAX)
         std = tf.math.exp(log_std) + self.EPS
@@ -138,7 +158,7 @@ class PPOAgent:
 
         return action_cont, cont_log_probs, mean, std
 
-    @tf.function
+
     def discount_reward(self, rewards: tf.Tensor, dones: tf.Tensor, gamma: float | np.float32 = 0.99) -> tf.Tensor:
         rews = tf.reverse(rewards, axis=[0])
         dns = tf.reverse(dones, axis=[0])
@@ -156,16 +176,16 @@ class PPOAgent:
 
         return tf.reverse(discounted, axis=[0])
 
-    @tf.function
+
     def standardize(self, values) -> tf.Tensor:
         return (values - tf.reduce_mean(values)) / (tf.math.reduce_std(values) + 1e-8)
 
-    @tf.function
+
     def simple_advantages(self, returns, values) -> tf.Tensor:
         advantages = returns - values
         return self.standardize(advantages)
 
-    @tf.function
+
     def gae_advantages(self, rewards, values, dones, states):
 
         next_values = tf.concat([values[1:], tf.expand_dims(values[-1], 0)], axis=0)
@@ -185,14 +205,14 @@ class PPOAgent:
 
         return self.standardize(adv)
 
-    @tf.function
+
     def get_advantages(self, rewards, values, dones, states) -> tf.Tensor:
         if self.advantage_type == 'simple':
             return self.simple_advantages(rewards, values)
         return self.gae_advantages(rewards, values, dones, states)
 
-    @tf.function
-    def _compute_loss(self, new_log_probs, old_log_probs, new_logits_disc, old_logits_disc, log_std_new, actions_disc, values, returns, advantages):
+
+    def _compute_actor_loss(self, new_log_probs, old_log_probs, new_logits_disc, old_logits_disc, log_std_new, actions_disc, value_loss, advantages):
 
         # Only for DEBUGGING
         tf.debugging.check_numerics(new_log_probs, 'new_log_probs contains NaNs')
@@ -218,8 +238,6 @@ class PPOAgent:
         policy_loss_disc = -tf.reduce_mean(tf.minimum(ratio_disc * advantages, clipped_disc * advantages))
         policy_loss_cont = -tf.reduce_mean(tf.minimum(ratio_cont * advantages, clipped_cont * advantages))
 
-        value_loss = tf.reduce_mean(tf.square(returns - values))
-
         entropy_bonus_disc = -tf.reduce_mean(tf.reduce_sum(new_policy_disc * tf.math.log(new_policy_disc + 1e-10), axis=1))
         entropy_bonus_cont = -tf.reduce_mean(tf.reduce_sum(log_std_new + 0.5 * np.log(2 * np.pi * np.e), axis=1))
 
@@ -229,9 +247,10 @@ class PPOAgent:
         cont_actor_loss = policy_loss_cont - self.c2 * entropy_bonus_cont
         actor_loss = disc_actor_loss + cont_actor_loss
 
-        return objective, actor_loss, value_loss
+        return objective, actor_loss
 
-    @tf.function
+
+    # @tf.function
     def _apply_grad(
             self,
             states: tf.Tensor,
@@ -241,9 +260,12 @@ class PPOAgent:
             actions_disc: tf.Tensor,
             old_log_probs: tf.Tensor,
             old_logits: tf.Tensor,
-            values: tf.Tensor,
         ):
-        with tf.GradientTape() as tape1, tf.GradientTape() as tape2:
+        with tf.GradientTape() as critic_tape:
+            values = tf.squeeze(self.critic.forward(states))
+            critic_loss = tf.reduce_mean(tf.square(returns - values))
+
+        with tf.GradientTape() as actor_tape:
             mixed = self.actor.forward(states)
             logits, mean, log_std = tf.split(mixed, 3, axis=1)
 
@@ -251,9 +273,7 @@ class PPOAgent:
 
             log_probs = self.compute_cont_log_probs(actions_cont, mean, log_std)
 
-            values = tf.squeeze(self.critic.forward(states))
-
-            objective, actor_loss, critic_loss = self._compute_loss(
+            objective, actor_loss = self._compute_actor_loss(
                 new_log_probs=log_probs,
                 old_log_probs=old_log_probs,
 
@@ -263,18 +283,18 @@ class PPOAgent:
                 log_std_new=log_std,
                 actions_disc=actions_disc,
 
-                values=values,
-                returns=returns,
+                value_loss=critic_loss,
                 advantages=advantages
             )
 
-        actor_gradients = tape1.gradient(actor_loss, self.actor.trainable_variables)
-        critic_gradients = tape2.gradient(critic_loss, self.critic.trainable_variables)
+        actor_gradients = actor_tape.gradient(actor_loss, self.actor.trainable_variables)
+        critic_gradients = critic_tape.gradient(critic_loss, self.critic.trainable_variables)
 
         self.actor.optimizer.apply_gradients(zip(actor_gradients, self.actor.trainable_variables))
         self.critic.optimizer.apply_gradients(zip(critic_gradients, self.critic.trainable_variables))
 
         return objective
+
 
     def update(
         self,
@@ -289,17 +309,11 @@ class PPOAgent:
         debug: bool = False,
     ) -> List[float]:
 
-        if DEBUG:
-            print('Monitoring before UPDATE STARTED')
-            self.recourse_monitor.get_info()
-
         objective_values = []
         returns = self.discount_reward(rewards, dones, self.gamma)
         advantages = self.get_advantages(rewards, values, dones, states)
 
-        for epoch in range(self.opt_epochs):
-            # print(f'Optimization epoch {epoch}')
-            # self.recourse_monitor.get_info()
+        for _ in range(self.opt_epochs):
 
             objective = self._apply_grad(
                 states=states,
@@ -309,24 +323,9 @@ class PPOAgent:
                 actions_disc=actions_disc,
                 old_log_probs=old_log_probs,
                 old_logits=old_logits,
-                values=values
             )
 
             objective_values.append(objective)
-
-            # if debug:
-            #     print('Monitoring BEFORE garbage collected in UPDATE')
-            #     self.recourse_monitor.get_info()
-
-            # del tape1
-            # del tape2
-            # del actor_gradients
-            # del critic_gradients
-            # gc.collect()
-
-            # if debug:
-            #     print('Monitoring AFTER garbage collected in UPDATE')
-            #     self.recourse_monitor.get_info()
 
         return tf.squeeze(tf.stack(objective_values))
 
@@ -336,6 +335,7 @@ def to_tensor(*arrays: List) -> List:
     for array in arrays:
 
         tensor = tf.stack(array)
+        array.clear()
 
         if not tensor.dtype.is_integer and not tensor.dtype.is_bool:
             tensor = tf.cast(tensor, dtype=tf.float32)
@@ -396,7 +396,7 @@ def plot_statistics(data: list, plot_name: str, rolling_window: int = 50):
     plt.grid(True, linestyle="--", alpha=0.7)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(os.path.join(os.path.dirname(DIR), 'plots', 'ppo', f'{plot_name.replace(' ', '_')}'), dpi=200)
+    plt.savefig(os.path.join('plots', 'ppo', plot_name.replace(' ', '_')), dpi=200)
     plt.close()
 
 
@@ -410,6 +410,7 @@ def train(
 
         hidden_layers: int = 16,
         hidden_units: int = 32,
+        dropout: float = 0.2,
 
         actor_lr: float | np.float32 = 1e-4,
         critic_lr: float | np.float32 = 5e-4,
@@ -468,7 +469,7 @@ def train(
     agent = PPOAgent(
         num_features=observation_shape, num_actions=num_actions, cont_actions=1, memory_size=memory_size, hidden_layers=hidden_layers,
         hidden_units=hidden_units, actor_lr=actor_lr, critic_lr=critic_lr, advantage_type=advantage_type, gamma=gamma, lam=lam,
-        clip_ratio=clip_ratio, opt_epochs=opt_epochs, c1=c1, c2=c2
+        clip_ratio=clip_ratio, opt_epochs=opt_epochs, c1=c1, c2=c2, dropout=dropout
     )
     window = create_memory_window(memory_size=memory_size, num_features=observation_shape, initial_obs=obs)
 
@@ -509,15 +510,6 @@ def train(
             total_losses.extend(objective_values)
             last_n_losses.extend(objective_values)
 
-            batch_actions_cont.clear()
-            batch_actions_disc.clear()
-            batch_logits_disc.clear()
-            batch_log_probs.clear()
-            batch_rewards.clear()
-            batch_states.clear()
-            batch_values.clear()
-            batch_dones.clear()
-
             current_batch_size = 0
 
         if done:
@@ -543,8 +535,9 @@ def train(
                 agent.save(save_path)
 
         if step % stats_every == 0:
+            avg_objective = 0 if len(last_n_losses) == 0 else np.mean(last_n_losses)
             if display_stat:
-                tqdm.write(f'Step {step} | Mean rewards: {np.mean(last_n_rewards):.3f} | Mean objective: {np.mean(last_n_losses):.3f} |')
+                tqdm.write(f'Step {step} | Mean rewards: {np.mean(last_n_rewards):.3f} | Mean objective: {np.mean(avg_objective):.3f} |')
             last_n_rewards = []
             last_n_losses = []
 
