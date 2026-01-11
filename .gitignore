@@ -5,3 +5,6 @@ __pycache__
 __init__
 *.keras.*
 .vscode
+*.pth
+*.keras
+*plot*
