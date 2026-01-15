@@ -82,6 +82,12 @@ class Market(gym.Env):
         self.entry_price = 0.0
 
         self.current_price = self.observations.iloc[0]['close_raw']
+        self.last_not_zero_price = self.current_price # to avoid accidental division by zero
+
+        # Somnitelno, no okey
+        if self.initial_cash / self.current_price < 10:
+            self.initial_cash = self.current_price * 10
+
         self.previous_price = self.current_price
         self.current_episode = 0
         self.current_step = -1
@@ -178,6 +184,7 @@ class Market(gym.Env):
 
         # third element - close
         self.current_price = self.observations.iloc[self.current_step]['close_raw']
+        self.last_not_zero_price = self.current_price if self.current_price != 0 else self.last_not_zero_price
 
         reward = (self.position * (self.current_price - self.previous_price)) / self.initial_cash * self.reward_scaler
         truncated = done
@@ -225,6 +232,10 @@ class Market(gym.Env):
             else:
                 self.entry_price = self.current_price * (1 - self.slippage)
                 self.position = -1
+
+            if self.current_price <= 0:
+                self.current_price = self.last_not_zero_price
+
             self.qty = abs(ratio) * self.cash * (1 - self.fee) / self.current_price
 
             self.cash -= abs(ratio) * self.cash

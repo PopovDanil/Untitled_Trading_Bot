@@ -50,7 +50,7 @@ class PPOAgent:
             gamma: float | np.float32=0.99,
             lam: float | np.float32 = 0.95,
             clip_ratio: float | np.float32 = 0.2,
-            grad_norm: float = 0.5,
+            grad_norm: float | None = 0.5,
             opt_epochs: int = 10,
             c1: float | np.float32 = 0.05,
             c2: float | np.float32 = 0.01,
@@ -111,7 +111,7 @@ class PPOAgent:
         with torch.no_grad():
             mixed = self.actor.forward(observation.reshape(1, *observation.shape))
 
-            logits_disc, mean, log_std = torch.split(mixed, 1, dim=1) # dolbanytia systema
+            logits_disc, mean, log_std = torch.split(mixed, 1, dim=1)
 
             action_distr = torch.distributions.Categorical(logits=logits_disc)
             action_disc = torch.squeeze(action_distr.sample()).cpu().numpy()
@@ -318,10 +318,11 @@ class PPOAgent:
 
         objective.backward()
 
-        torch.nn.utils.clip_grad_norm_(
-            list(self.actor.parameters()) + list(self.critic.parameters()),
-            max_norm=self.grad_norm
-        )
+        if self.grad_norm is not None:
+            torch.nn.utils.clip_grad_norm_(
+                list(self.actor.parameters()) + list(self.critic.parameters()),
+                max_norm=self.grad_norm
+            )
 
         self.actor.optimizer.step()
         self.critic.optimizer.step()
@@ -436,7 +437,7 @@ def evaluate_policy(env: gym.Env, agent: PPOAgent, num_episodes: int = 10, memor
     agent.actor.train()
     agent.critic.train()
 
-    return rewards
+    return np.mean(rewards)
 
 
 def plot_statistics(data: list, plot_name: str, rolling_window: int = 50):
@@ -483,7 +484,7 @@ def train(
         lam: float | np.float32 = 0.95,
 
         clip_ratio: float | np.float32 = 0.2,
-        grad_norm: float | np.float32 = 0.5,
+        grad_norm: float | None = None,
         opt_epochs: int = 10,
 
         c1: float | np.float32 = 0.05,
@@ -501,7 +502,7 @@ def train(
         save_path: str = 'models_params',
         debug: bool = False,
         seed: int = 123,
-    ) -> Tuple[np.float32]:
+    ) -> np.float32:
 
     set_seed(seed)
 
@@ -510,8 +511,7 @@ def train(
     last_n_rewards = []
     last_n_losses = []
     total_rewards = []
-    total_losses = []
-    eval_rewards = []
+    total_objective = []
     ep_lens = []
 
     batch_actions_disc = []
@@ -583,7 +583,7 @@ def train(
                 s, a_c, a_d, o_l_p, o_l_d, v, r, d,
             ).to('cpu').detach().numpy()
 
-            total_losses.extend(objective_values)
+            total_objective.extend(objective_values)
             last_n_losses.extend(objective_values)
 
             current_batch_size = 0
@@ -599,15 +599,9 @@ def train(
 
         if step % eval_interval == 0 and eval_env is not None:
             rewards = evaluate_policy(eval_env, agent, eval_episodes)
-
-            eval_rewards.extend(rewards)
             avg_reward = np.mean(rewards)
 
             if display_stat:
-                # pbar.set_postfix({
-                #     'Mean rewards': avg_reward,
-                #     'Episodes': eval_episodes
-                # })
                 pbar.write(f'Policy evaluation | Mean rewards {avg_reward:.3f} per {eval_episodes} episodes |')
 
             if avg_reward > best_eval:
@@ -616,13 +610,12 @@ def train(
 
         if step % stats_every == 0:
             avg_objective = 0 if len(last_n_losses) == 0 else np.mean(last_n_losses)
+
             if display_stat:
-                # pbar.set_postfix({
-                #     'Step': step,
-                #     'Mean rewards': np.mean(last_n_rewards),
-                #     'Mean objective': np.mean(avg_objective)
-                # })
-                pbar.write(f'Step {step} | Mean rewards: {np.mean(last_n_rewards):.3f} | Mean objective: {np.mean(avg_objective):.3f} |')
+                pbar.write(
+                    f'Per {stats_every} last steps | Mean rewards: {np.mean(last_n_rewards):.3f} | '
+                    f'Mean objective: {np.mean(avg_objective):.3f} |'
+                )
 
             last_n_rewards = []
             last_n_losses = []
@@ -630,10 +623,12 @@ def train(
     if display_stat:
         plot_statistics(total_rewards, 'Total rewards per episode')
         plot_statistics(ep_lens, 'Total episode lengths')
-        plot_statistics(total_losses, 'Objective')
+        plot_statistics(total_objective, 'Objective')
+
+    avg_eval_rewards = evaluate_policy(eval_env, agent, eval_env.num_episodes)
 
     if del_model:
         del agent
         gc.collect()
 
-    return np.mean(total_losses), np.mean(total_rewards)
+    return avg_eval_rewards
