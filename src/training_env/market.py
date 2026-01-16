@@ -17,9 +17,9 @@ class Market(gym.Env):
         initial_cash: np.float32,
         slippage: np.float32,
         broker_fee: np.float32,
-        lam: float = 0.01,
-        reward_scaler: float = 100.0,
-        seed: int = 123
+        lam: float = 0.3,
+        reward_scaler: float = 10.0,
+        seed: int = 42
         ) -> None:
         """
         Initializes a new market instance.
@@ -67,15 +67,16 @@ class Market(gym.Env):
         self.profitable_episodes = 0
         self.initial_cash = initial_cash
         self.cash = initial_cash
-        self.pnl = 0.0
-        self.qty = 0.0
+        self.pnl = 0.0 # Profit and Loss
+        self.qty = 0.0 # Quantity
 
         self.slippage = slippage
         self.fee = broker_fee
         self.lam = lam
 
-        self.max_reward = 100.0
-        self.min_reward = -100.0
+        # calculated by looking at code
+        self.max_reward = 11
+        self.min_reward = -8.5
         self.reward_scaler = reward_scaler # used to avoid to small rewards due to cash increase/decrease
 
         self.position = 0 # 0 - waiting, 1 - long, -1 - short
@@ -87,10 +88,14 @@ class Market(gym.Env):
         # Somnitelno, no okey
         if self.initial_cash / self.current_price < 10:
             self.initial_cash = self.current_price * 10
+            self.cash = self.initial_cash
 
         self.previous_price = self.current_price
         self.current_episode = 0
         self.current_step = -1
+
+        self.zero = 0
+        self.one = 0
 
 
     def _reorder_obs(self) -> None:
@@ -130,6 +135,11 @@ class Market(gym.Env):
         self.episode_len = self.observations.shape[0]
         self.num_episodes = len(files)
 
+        # find min and max prices for penalty normalization
+        self.min_price_per_episode = self.observations['close_raw'].min()
+        self.max_price_per_episode = self.observations['close_raw'].max()
+        self.price_amplitude = self.max_price_per_episode - self.min_price_per_episode
+
         # exclude close_raw
         self.data_columns = self.observations.columns.to_list()
         self.data_columns.remove('close_raw')
@@ -147,7 +157,6 @@ class Market(gym.Env):
         self.current_step = (self.current_step + 1) % self.episode_len
 
         done = False
-        remaining_steps = 0
         position = self.position
 
         if (self.current_step == 0 and previous > 0) or self.current_episode >= self.num_episodes:
@@ -161,14 +170,12 @@ class Market(gym.Env):
                 self._reorder_obs()
                 self.current_episode = 0
         else:
-            remaining_steps = self.episode_len - self.current_step
             obs = self.observations.loc[self.current_step, self.data_columns].values
 
-        # Normalize them
-        norm_step = self.current_step / self.episode_len
-        norm_remaining = remaining_steps / self.episode_len
+        # Normalize them: 74.5 is mean of 0-149, 43.8816... is std
+        norm_step = (self.current_step - 74.5) / 43.88
 
-        obs = np.hstack([obs, np.array([position, norm_step, norm_remaining])], dtype=np.float32)
+        obs = np.hstack([obs, np.array([position, norm_step])], dtype=np.float32)
 
         # print(f'Current file - {self.current_episode} | obs - {obs} |')
 
@@ -179,6 +186,11 @@ class Market(gym.Env):
         pnl = 0.0
         ratio, close = action
 
+        if close == 0:
+            self.zero += 1
+        else:
+            self.one += 1
+
         current_obs, done = self._get_next_obs() # CASH NOT ADDED
         if done: close = True
 
@@ -186,28 +198,31 @@ class Market(gym.Env):
         self.current_price = self.observations.iloc[self.current_step]['close_raw']
         self.last_not_zero_price = self.current_price if self.current_price != 0 else self.last_not_zero_price
 
-        reward = (self.position * (self.current_price - self.previous_price)) / self.initial_cash * self.reward_scaler
+        # Instant reward: position - {-1, 0, 1} -> -1 and price goes up = penalty, 1 and price goes down = penalty.
+        # Waiting (0) = nothing. Price price_amplitude guarantees reward in range [-1, 1]
+        reward = (self.position * (self.current_price - self.previous_price)) / self.price_amplitude
+
         truncated = done
         terminated = done
         info = {}
 
         if close and self.position == 0:
-            reward -= 1
+            reward -= 1 # penalty for closing not yet opened contract
 
-        if close == 1:
+        elif close == 1:
 
             pnl = self.position * (self.current_price - self.entry_price) * self.qty
             pnl = pnl * (1 - self.fee) if pnl > 0 else pnl * (1 + self.fee)
 
             # avoid 0 division
-            reward += (pnl / (self.cash + 1e-6)) * self.reward_scaler
+            reward += np.clip((pnl / (self.cash + 1e-6)), -2, 10) # idk
             self.cash += pnl
 
             if self.cash <= 0:
                 truncated = True
                 terminated = True
                 done = True
-                reward = -10
+                reward = -3 # proigrali
 
             if done:
                 profit_ratio = self.cash / self.initial_cash * 100
@@ -224,7 +239,7 @@ class Market(gym.Env):
         elif ratio != 0 and self.position != 0:
             reward = -1
         elif ratio == 0 and self.position == 0:
-            reward -= self.lam
+            reward -= self.lam # penalty for waiting outside the position
         else:
             if ratio > 0:
                 self.entry_price = self.current_price * (1 + self.slippage)
@@ -241,19 +256,22 @@ class Market(gym.Env):
             self.cash -= abs(ratio) * self.cash
 
             if self.cash == 0:
-                reward -= 2
+                reward -= 1
 
         # Update the price
         self.previous_price = self.current_price
 
+        # TODO: Use standardization
         current_obs = np.hstack([current_obs, np.array([self.cash / self.initial_cash])], dtype=np.float32) # Normalized cash was added
 
-        # Clip reward
-        reward = np.clip(reward, self.min_reward, self.max_reward)
+        # Clip and scale reward
+        reward = np.clip(reward, self.min_reward, self.max_reward) * self.reward_scaler
+
         return current_obs, reward, truncated, terminated, info
 
 
     def reset(self, *args, **kwargs) -> tuple[np.ndarray, dict]:
+        # print(self.zero, self.one)
         self.cash = self.initial_cash
         self.pnl = 0.0
         self.qty = 0.0

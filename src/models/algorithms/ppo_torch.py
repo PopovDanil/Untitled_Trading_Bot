@@ -72,7 +72,7 @@ class PPOAgent:
             timestamps=memory_size,
             features=num_features,
             dropout=dropout,
-            output_shape=3,
+            output_shape=4,
             hidden_layers=hidden_layers,
             hidden_units=hidden_units,
             lr=actor_lr,
@@ -111,7 +111,8 @@ class PPOAgent:
         with torch.no_grad():
             mixed = self.actor.forward(observation.reshape(1, *observation.shape))
 
-            logits_disc, mean, log_std = torch.split(mixed, 1, dim=1)
+            logits_disc_close, logits_disc_open, mean, log_std = torch.split(mixed, 1, dim=1)
+            logits_disc = torch.concat([logits_disc_close, logits_disc_open], dim=1)
 
             action_distr = torch.distributions.Categorical(logits=logits_disc)
             action_disc = torch.squeeze(action_distr.sample()).cpu().numpy()
@@ -159,7 +160,7 @@ class PPOAgent:
     def compute_cont_action(self, mean, log_std):
 
         log_std_clipped = torch.clip(log_std, self.LOG_STD_MIN, self.LOG_STD_MAX)
-        std = torch.exp(log_std) + self.EPS
+        std = torch.exp(log_std_clipped) + self.EPS
 
         norm_dist = torch.distributions.Normal(loc=0.0, scale=1.0)
         z = norm_dist.sample(sample_shape=(self.cont_actions,)).to(DEVICE)
@@ -295,7 +296,8 @@ class PPOAgent:
         critic_loss = torch.mean(torch.square(returns - values))
 
         mixed = self.actor.forward(states)
-        logits, mean, log_std = torch.split(mixed, 1, dim=1)
+        logits_close, logits_open, mean, log_std = torch.split(mixed, 1, dim=1)
+        logits = torch.concat([logits_close, logits_open], dim=1)
 
         log_probs = self.compute_cont_log_probs(actions_cont, mean, log_std)
 
@@ -462,7 +464,7 @@ def plot_statistics(data: list, plot_name: str, rolling_window: int = 50):
     plt.close()
 
 
-def set_seed(seed: int = 123) -> None:
+def set_seed(seed: int = 42) -> None:
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
