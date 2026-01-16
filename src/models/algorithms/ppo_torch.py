@@ -41,6 +41,7 @@ class PPOAgent:
             num_actions: int,
             cont_actions: int,
             memory_size: int = 3,
+            replay_buffer_size: int = 8096,
             hidden_layers: int = 16,
             hidden_units: int = 32,
             dropout: float = 0.2,
@@ -64,6 +65,7 @@ class PPOAgent:
         self.cont_actions = cont_actions
         self.num_features = num_features
         self.advantage_type = advantage_type
+        self.replay_buffer_size = replay_buffer_size
 
         self.actor_lr = actor_lr
         self.critic_lr = critic_lr
@@ -111,8 +113,8 @@ class PPOAgent:
         with torch.no_grad():
             mixed = self.actor.forward(observation.reshape(1, *observation.shape))
 
-            logits_disc_close, logits_disc_open, mean, log_std = torch.split(mixed, 1, dim=1)
-            logits_disc = torch.concat([logits_disc_close, logits_disc_open], dim=1)
+            logits_disc_open, logits_disc_close, mean, log_std = torch.split(mixed, 1, dim=1)
+            logits_disc = torch.concat([logits_disc_open, logits_disc_close], dim=1)
 
             action_distr = torch.distributions.Categorical(logits=logits_disc)
             action_disc = torch.squeeze(action_distr.sample()).cpu().numpy()
@@ -157,55 +159,32 @@ class PPOAgent:
         return cont_log_probs
 
 
-    # def compute_cont_action(self, mean, log_std):
+    def compute_cont_action(self, mean, log_std):
 
-    #     log_std_clipped = torch.clip(log_std, self.LOG_STD_MIN, self.LOG_STD_MAX)
-    #     std = torch.exp(log_std_clipped) + self.EPS
-
-    #     norm_dist = torch.distributions.Normal(loc=0.0, scale=1.0)
-    #     z = norm_dist.sample(sample_shape=(self.cont_actions,)).to(DEVICE)
-    #     u = mean + std * z
-
-    #     action_cont = torch.squeeze(torch.tanh(u))
-
-    #     cont_log_probs = -0.5 * torch.sum((z ** 2) + 2.0 * log_std_clipped + torch.log(tensor(2 * np.pi)), dim=1, keepdims=True)
-    #     jacobian = torch.log(tensor(1.0 - action_cont ** 2 + self.EPS))
-    #     cont_log_probs = cont_log_probs - jacobian
-
-    #     if self.debug:
-    #         checker(cont_log_probs, 'cont_log_probs-compute_cont_action')
-    #         checker(action_cont, 'action_cont-compute_cont_action')
-    #         checker(jacobian, 'jacobian-compute_cont_action')
-    #         checker(std, 'std-compute_cont_action')
-    #         checker(z, 'z-compute_cont_action')
-
-    #     return action_cont, cont_log_probs, mean, std
-
-    def compute_cont_action(self, mean: torch.Tensor, log_std: torch.Tensor):
-        # mean, log_std : (batch, cont_actions)
-        log_std_clipped = torch.clamp(log_std, self.LOG_STD_MIN, self.LOG_STD_MAX)
+        log_std_clipped = torch.clip(log_std, self.LOG_STD_MIN, self.LOG_STD_MAX)
         std = torch.exp(log_std_clipped) + self.EPS
 
-        # sample z for each batch-row and cont action
-        z = torch.randn_like(mean, device=DEVICE)  # shape same as mean
+        norm_dist = torch.distributions.Normal(loc=0.0, scale=1.0)
+        z = norm_dist.sample(sample_shape=(self.cont_actions,)).to(DEVICE)
         u = mean + std * z
-        action_cont = torch.tanh(u)
 
-        # log prob for normal -> then adjust with tanh jacobian
-        # normal logprob:
-        # -0.5 * sum( ((u-mean)/std)**2 + 2*log_std + log(2*pi) )
-        log_base = -0.5 * (((z ** 2) + 2.0 * log_std_clipped + torch.log(tensor(2 * np.pi))).sum(dim=1, keepdim=True))
-        jacobian = torch.sum(torch.log(1.0 - action_cont ** 2 + self.EPS), dim=1, keepdim=True)
-        cont_log_probs = log_base - jacobian
+        action_cont = torch.squeeze(torch.tanh(u))
+
+        cont_log_probs = -0.5 * torch.sum((z ** 2) + 2.0 * log_std_clipped + torch.log(tensor(2 * np.pi)), dim=1, keepdims=True)
+        jacobian = torch.log(tensor(1.0 - action_cont ** 2 + self.EPS))
+        cont_log_probs = cont_log_probs - jacobian
 
         if self.debug:
             checker(cont_log_probs, 'cont_log_probs-compute_cont_action')
             checker(action_cont, 'action_cont-compute_cont_action')
+            checker(jacobian, 'jacobian-compute_cont_action')
+            checker(std, 'std-compute_cont_action')
+            checker(z, 'z-compute_cont_action')
 
         return action_cont, cont_log_probs, mean, std
 
 
-    def discount_reward(self, rewards: torch.tensor, dones: torch.tensor, gamma: float | np.float32 = 0.99) -> torch.tensor:
+    def discount_reward(self, rewards: torch.tensor, dones: torch.tensor) -> torch.tensor:
         result = []
         discounted_sum = 0.0
 
@@ -213,7 +192,7 @@ class PPOAgent:
             if done:
                 discounted_sum = 0.0
 
-            discounted_sum = reward + gamma * discounted_sum
+            discounted_sum = reward + self.gamma * discounted_sum
             result.append(discounted_sum)
 
         result = tensor(result[::-1], dtype=torch.float32)
@@ -237,7 +216,7 @@ class PPOAgent:
         gae = .0
         next_value = .0
         if not dones[-1]:
-            next_value = torch.squeeze(self.critic.forward(torch.atleast_2d(states[-1])))
+            next_value = values[-1]
 
         for t in reversed(range(T)):
             delta = rewards[t] + self.gamma * next_value * (1 - dones[t]) - values[t]
@@ -267,7 +246,6 @@ class PPOAgent:
         old_action_porbs_disc = torch.sum(actions_one_hot * old_policy_disc, dim=1)
 
         ratio_disc = torch.exp(torch.log(new_action_porbs_disc + 1e-10) - torch.log(old_action_porbs_disc + 1e-10))
-
         ratio_cont = torch.exp(new_log_probs - old_log_probs)
         ratio_cont = torch.squeeze(ratio_cont)
 
@@ -278,13 +256,11 @@ class PPOAgent:
         policy_loss_cont = -torch.mean(torch.min(ratio_cont * advantages, clipped_cont * advantages))
 
         entropy_bonus_disc = -torch.mean(torch.sum(new_policy_disc * torch.log(new_policy_disc + 1e-10), dim=1))
-        entropy_bonus_cont = -torch.mean(torch.sum(log_std_new + 0.5 * np.log(2 * np.pi * np.e), axis=1))
+        entropy_bonus_cont = torch.mean(torch.sum(log_std_new + 0.5 * (1. + np.log(2 * np.pi)), dim=1))
 
         objective = -policy_loss_cont - policy_loss_disc + self.c1 * value_loss + self.c2 * (entropy_bonus_disc + entropy_bonus_cont)
 
-        disc_actor_loss = policy_loss_disc - self.c2 * entropy_bonus_disc
-        cont_actor_loss = policy_loss_cont - self.c2 * entropy_bonus_cont
-        actor_loss = disc_actor_loss + cont_actor_loss
+        actor_loss = policy_loss_disc + policy_loss_cont - self.c2 * (entropy_bonus_disc + entropy_bonus_cont)
 
         if self.debug:
             checker(actions_one_hot, 'actions_one_hot-_compute_actor_loss')
@@ -300,7 +276,7 @@ class PPOAgent:
             checker(entropy_bonus_cont, 'entropy_bonus_cont-_compute_actor_loss')
             checker(objective, 'objective-_compute_actor_loss')
 
-        return objective, actor_loss
+        return actor_loss
 
 
     def _apply_grad(
@@ -318,12 +294,12 @@ class PPOAgent:
         critic_loss = torch.mean(torch.square(returns - values))
 
         mixed = self.actor.forward(states)
-        logits_close, logits_open, mean, log_std = torch.split(mixed, 1, dim=1)
-        logits = torch.concat([logits_close, logits_open], dim=1)
+        logits_open, logits_close, mean, log_std = torch.split(mixed, 1, dim=1)
+        logits = torch.concat([logits_open, logits_close], dim=1)
 
         log_probs = self.compute_cont_log_probs(actions_cont, mean, log_std)
 
-        objective, actor_loss = self._compute_actor_loss(
+        actor_loss = self._compute_actor_loss(
             new_log_probs=log_probs,
             old_log_probs=old_log_probs,
 
@@ -336,6 +312,8 @@ class PPOAgent:
             value_loss=critic_loss,
             advantages=advantages
         )
+
+        objective = actor_loss + self.c1 * critic_loss
 
         self.actor.optimizer.zero_grad()
         self.critic.optimizer.zero_grad()
@@ -371,15 +349,14 @@ class PPOAgent:
         old_logits: torch.Tensor,
         values: torch.Tensor,
         rewards: torch.Tensor,
+        returns: torch.Tensor,
+        advantages: torch.Tensor,
         dones: torch.Tensor,
     ) -> List[float]:
 
         objective_values = []
 
         for _ in range(self.opt_epochs):
-
-            returns = self.discount_reward(rewards, dones, self.gamma)
-            advantages = self.get_advantages(rewards, values, dones, states)
 
             objective = self._apply_grad(
                 states=states,
@@ -402,6 +379,25 @@ class PPOAgent:
             checker(dones, 'dones-update')
 
         return torch.squeeze(torch.stack(objective_values))
+
+
+def shuffle_and_split_into_mini_batches(*tensors, batch_size) -> list[list[torch.Tensor]]:
+    tensors = list(tensors)
+
+    N = tensors[0].shape[0]
+    perm = torch.randperm(N, device=DEVICE)
+
+    shuffled = [t[perm] for t in tensors]
+    batches = []
+    for start in range(0, N, batch_size):
+        end = start + batch_size
+        batch = [t[start : end] for t in shuffled]
+        batches.append(batch)
+
+    for i in range(len(tensors) - 1, -1, -1):
+        del tensors[i]
+
+    return batches
 
 
 def to_tensor(*arrays):
@@ -430,11 +426,7 @@ def create_memory_window(memory_size: int, num_features: int, initial_obs: np.nd
     window = deque(maxlen=memory_size)
 
     for _ in range(memory_size):
-        window.append(np.zeros(
-            shape=(num_features,),
-            dtype=np.float32,
-        ))
-    window.append(initial_obs)
+        window.append(initial_obs.copy())
 
     return window
 
@@ -516,6 +508,7 @@ def train(
 
         batch_size: int = 64,
         memory_size: int = 3,
+        replay_buffer_size: int = 8096,
         stats_every: int = 1000,
         eval_interval: int = 1000,
         eval_episodes: int = 10,
@@ -548,7 +541,7 @@ def train(
     batch_dones = []
 
     rewards_per_episode = 0.0
-    current_batch_size = 0
+    current_buffer_size = 0
     ep_len = 0
 
     observation_shape = env.observation_space.shape[0]
@@ -582,7 +575,7 @@ def train(
         obs, reward, terminated, truncated, _ = env.step((action_cont, action_disc))
         window.append(obs)
 
-        current_batch_size += 1
+        current_buffer_size += 1
         batch_actions_disc.append(action_disc)
         batch_actions_cont.append(action_cont)
         batch_rewards.append(reward)
@@ -595,22 +588,27 @@ def train(
         done = terminated or truncated
         batch_dones.append(done)
 
-        if current_batch_size >= batch_size:
+        if current_buffer_size >= replay_buffer_size:
             a_c, a_d, s, o_l_p, o_l_d, v, r, d = to_tensor(
                 batch_actions_cont, batch_actions_disc,
                 batch_states, batch_log_probs,
                 batch_logits_disc, batch_values,
                 batch_rewards, batch_dones
             )
+            rt = agent.discount_reward(r, d)
+            ad = agent.get_advantages(r, v, d, s)
 
-            objective_values = agent.update(
-                s, a_c, a_d, o_l_p, o_l_d, v, r, d,
-            ).to('cpu').detach().numpy()
+            for batch in shuffle_and_split_into_mini_batches(
+                s, a_c, a_d, o_l_p, o_l_d, v, r, rt, ad, d,
+                batch_size=batch_size
+            ):
+                objective_values = agent.update(
+                    *batch
+                ).to('cpu').detach().numpy()
+                total_objective.extend(objective_values)
+                last_n_losses.extend(objective_values)
 
-            total_objective.extend(objective_values)
-            last_n_losses.extend(objective_values)
-
-            current_batch_size = 0
+            current_buffer_size = 0
 
         if done:
             obs, _ = env.reset()

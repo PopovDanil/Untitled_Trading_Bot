@@ -17,8 +17,7 @@ class Market(gym.Env):
         initial_cash: np.float32,
         slippage: np.float32,
         broker_fee: np.float32,
-        lam: float = 0.3,
-        reward_scaler: float = 10.0,
+        lam: float = 0.1,
         seed: int = 42
         ) -> None:
         """
@@ -45,7 +44,7 @@ class Market(gym.Env):
         self.observation_space = spaces.Box(
             low=float('-inf'),
             high=float('inf'),
-            shape=(self.observation_shape + 4,),
+            shape=(self.observation_shape + 3,),
             dtype=np.float32
         )
 
@@ -75,10 +74,10 @@ class Market(gym.Env):
         self.lam = lam
 
         # calculated by looking at code
-        self.max_reward = 11
-        self.min_reward = -8.5
-        self.reward_scaler = reward_scaler # used to avoid to small rewards due to cash increase/decrease
+        self.max_reward = 7
+        self.min_reward = -7
 
+        self.ratio_threshold = 0.1 # used to avoid noise during training
         self.position = 0 # 0 - waiting, 1 - long, -1 - short
         self.entry_price = 0.0
 
@@ -87,7 +86,7 @@ class Market(gym.Env):
 
         # Somnitelno, no okey
         if self.initial_cash / self.current_price < 10:
-            self.initial_cash = self.current_price * 10
+            self.initial_cash = self.current_price * 100
             self.cash = self.initial_cash
 
         self.previous_price = self.current_price
@@ -236,9 +235,9 @@ class Market(gym.Env):
 
             self.position = 0
             self.qty = 0.0
-        elif ratio != 0 and self.position != 0:
-            reward = -1
-        elif ratio == 0 and self.position == 0:
+        elif abs(ratio) > self.ratio_threshold and self.position != 0:
+            reward -= 0.5
+        elif abs(ratio) <= self.ratio_threshold  and self.position == 0:
             reward -= self.lam # penalty for waiting outside the position
         else:
             if ratio > 0:
@@ -256,7 +255,7 @@ class Market(gym.Env):
             self.cash -= abs(ratio) * self.cash
 
             if self.cash == 0:
-                reward -= 1
+                reward -= 0.5
 
         # Update the price
         self.previous_price = self.current_price
@@ -265,7 +264,7 @@ class Market(gym.Env):
         current_obs = np.hstack([current_obs, np.array([self.cash / self.initial_cash])], dtype=np.float32) # Normalized cash was added
 
         # Clip and scale reward
-        reward = np.clip(reward, self.min_reward, self.max_reward) * self.reward_scaler
+        reward = np.clip(reward, self.min_reward, self.max_reward) / self.max_reward
 
         return current_obs, reward, truncated, terminated, info
 
