@@ -157,30 +157,52 @@ class PPOAgent:
         return cont_log_probs
 
 
-    def compute_cont_action(self, mean, log_std):
+    # def compute_cont_action(self, mean, log_std):
 
-        log_std_clipped = torch.clip(log_std, self.LOG_STD_MIN, self.LOG_STD_MAX)
+    #     log_std_clipped = torch.clip(log_std, self.LOG_STD_MIN, self.LOG_STD_MAX)
+    #     std = torch.exp(log_std_clipped) + self.EPS
+
+    #     norm_dist = torch.distributions.Normal(loc=0.0, scale=1.0)
+    #     z = norm_dist.sample(sample_shape=(self.cont_actions,)).to(DEVICE)
+    #     u = mean + std * z
+
+    #     action_cont = torch.squeeze(torch.tanh(u))
+
+    #     cont_log_probs = -0.5 * torch.sum((z ** 2) + 2.0 * log_std_clipped + torch.log(tensor(2 * np.pi)), dim=1, keepdims=True)
+    #     jacobian = torch.log(tensor(1.0 - action_cont ** 2 + self.EPS))
+    #     cont_log_probs = cont_log_probs - jacobian
+
+    #     if self.debug:
+    #         checker(cont_log_probs, 'cont_log_probs-compute_cont_action')
+    #         checker(action_cont, 'action_cont-compute_cont_action')
+    #         checker(jacobian, 'jacobian-compute_cont_action')
+    #         checker(std, 'std-compute_cont_action')
+    #         checker(z, 'z-compute_cont_action')
+
+    #     return action_cont, cont_log_probs, mean, std
+
+    def compute_cont_action(self, mean: torch.Tensor, log_std: torch.Tensor):
+        # mean, log_std : (batch, cont_actions)
+        log_std_clipped = torch.clamp(log_std, self.LOG_STD_MIN, self.LOG_STD_MAX)
         std = torch.exp(log_std_clipped) + self.EPS
 
-        norm_dist = torch.distributions.Normal(loc=0.0, scale=1.0)
-        z = norm_dist.sample(sample_shape=(self.cont_actions,)).to(DEVICE)
+        # sample z for each batch-row and cont action
+        z = torch.randn_like(mean, device=DEVICE)  # shape same as mean
         u = mean + std * z
+        action_cont = torch.tanh(u)
 
-        action_cont = torch.squeeze(torch.tanh(u))
-
-        cont_log_probs = -0.5 * torch.sum((z ** 2) + 2.0 * log_std_clipped + torch.log(tensor(2 * np.pi)), dim=1, keepdims=True)
-        jacobian = torch.log(tensor(1.0 - action_cont ** 2 + self.EPS))
-        cont_log_probs = cont_log_probs - jacobian
+        # log prob for normal -> then adjust with tanh jacobian
+        # normal logprob:
+        # -0.5 * sum( ((u-mean)/std)**2 + 2*log_std + log(2*pi) )
+        log_base = -0.5 * (((z ** 2) + 2.0 * log_std_clipped + torch.log(tensor(2 * np.pi))).sum(dim=1, keepdim=True))
+        jacobian = torch.sum(torch.log(1.0 - action_cont ** 2 + self.EPS), dim=1, keepdim=True)
+        cont_log_probs = log_base - jacobian
 
         if self.debug:
             checker(cont_log_probs, 'cont_log_probs-compute_cont_action')
             checker(action_cont, 'action_cont-compute_cont_action')
-            checker(jacobian, 'jacobian-compute_cont_action')
-            checker(std, 'std-compute_cont_action')
-            checker(z, 'z-compute_cont_action')
 
         return action_cont, cont_log_probs, mean, std
-
 
 
     def discount_reward(self, rewards: torch.tensor, dones: torch.tensor, gamma: float | np.float32 = 0.99) -> torch.tensor:
