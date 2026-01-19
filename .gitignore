@@ -8,3 +8,4 @@ __init__
 *.pth
 *.keras
 *model_params*
+*vscode*
