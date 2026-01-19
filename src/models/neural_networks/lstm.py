@@ -46,7 +46,6 @@ class LSTM(torch.nn.Module):
         self.features = features
         self.hidden_units = hidden_units
 
-        # LSTM layer
         self.lstm = nn.LSTM(
             input_size=features,
             hidden_size=hidden_units,

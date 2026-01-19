@@ -5,6 +5,8 @@ import numpy as np
 import pandas as pd
 from gymnasium import spaces
 
+from settings import market_settings
+
 
 class Market(gym.Env):
     """
@@ -84,17 +86,20 @@ class Market(gym.Env):
         self.current_price = self.observations.iloc[0]['close_raw']
         self.last_not_zero_price = self.current_price # to avoid accidental division by zero
 
-        # Somnitelno, no okey
-        if self.initial_cash / self.current_price < 10:
-            self.initial_cash = self.current_price * 100
-            self.cash = self.initial_cash
-
         self.previous_price = self.current_price
         self.current_episode = 0
         self.current_step = -1
 
         self.zero = 0
         self.one = 0
+
+
+    def _adjust_initial_cash(self):
+        # Somnitelno, no okey
+        surplus = 1 if self.current_step == -1 else 0
+        if self.initial_cash / self.observations.iloc[self.current_step + surplus]['close_raw'] < 10:
+            self.initial_cash = self.observations.iloc[self.current_step + surplus]['close_raw'] * 10
+            self.cash = self.initial_cash
 
 
     def _reorder_obs(self) -> None:
@@ -168,6 +173,8 @@ class Market(gym.Env):
             if self.current_episode >= self.num_episodes - 1:
                 self._reorder_obs()
                 self.current_episode = 0
+
+            self._adjust_initial_cash()
         else:
             obs = self.observations.loc[self.current_step, self.data_columns].values
 
@@ -183,7 +190,11 @@ class Market(gym.Env):
 
     def step(self, action: tuple) -> tuple[np.ndarray, float, bool, bool, dict]:
         pnl = 0.0
+
         ratio, close = action
+        ratio = np.clip(ratio, -1, 1)
+
+        zero_cash = False
 
         if close == 0:
             self.zero += 1
@@ -213,25 +224,33 @@ class Market(gym.Env):
             pnl = self.position * (self.current_price - self.entry_price) * self.qty
             pnl = pnl * (1 - self.fee) if pnl > 0 else pnl * (1 + self.fee)
 
+            info.update({
+                'pnl': pnl
+            })
+
             # avoid 0 division
             reward += np.clip((pnl / (self.cash + 1e-6)), -2, 10) # idk
             self.cash += pnl
 
             if self.cash <= 0:
-                truncated = True
-                terminated = True
-                done = True
-                reward = -3 # proigrali
+                if market_settings.train:
+                    self.cash = self.initial_cash
+                    zero_cash = True
+                else:
+                    truncated = True
+                    terminated = True
+                    done = True
+                    reward = self.min_reward
 
             if done:
                 profit_ratio = self.cash / self.initial_cash * 100
                 if profit_ratio > 0: self.profitable_episodes += 1
 
-                info = {
+                info.update({
                     'profit_ratio': profit_ratio,
                     'profitable_episodes': self.profitable_episodes,
                     'last_step': self.current_step
-                }
+                })
 
             self.position = 0
             self.qty = 0.0
@@ -265,6 +284,8 @@ class Market(gym.Env):
 
         # Clip and scale reward
         reward = np.clip(reward, self.min_reward, self.max_reward) / self.max_reward
+        if zero_cash:
+            reward = self.min_reward
 
         return current_obs, reward, truncated, terminated, info
 

@@ -5,37 +5,41 @@ from collections import deque
 from typing import List, Tuple
 
 import gymnasium as gym
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from tqdm import tqdm
+from tqdm.notebook import tqdm
 
-from models.neural_networks.lstm_torch import LSTM
-from settings import DIR
-
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-def tensor(x, device=DEVICE, dtype=torch.float32) -> torch.Tensor:
-    if isinstance(x, torch.Tensor):
-        x = x.detach()
-        if x.device != device:
-            x = x.to(device)
-        if x.dtype != dtype:
-            x = x.to(dtype)
-        return x
-
-    return torch.tensor(x, device=device, dtype=dtype)
-
-
-def checker(X, name) -> None:
-    if torch.isnan(X).any():
-        print(f"NaN in {name}")
-    if torch.isinf(X).any():
-        print(f"Inf in {name}")
+from models.algorithms.utils import checker, plot_statistics, tensor
+from models.neural_networks.lstm import LSTM
+from settings import DEVICE, DIR
 
 
 class PPOAgent:
+    """
+    Proximal Policy Optimization (PPO) agent using LSTM-based actor-critic architecture
+    for hybrid action spaces (discrete + continuous).
+
+    Args:
+        num_features (int): Number of features in each observation.
+        num_actions (int): Number of discrete actions.
+        cont_actions (int): Number of continuous action dimensions.
+        memory_size (int): Number of past observations stored for LSTM input.
+        replay_buffer_size (int): Number of transitions stored before training update.
+        hidden_layers (int): Number of LSTM layers.
+        hidden_units (int): Number of hidden units per LSTM layer.
+        dropout (float): Dropout rate for neural networks.
+        actor_lr (float | np.float32): Learning rate for the actor network.
+        critic_lr (float | np.float32): Learning rate for the critic network.
+        advantage_type (str): Advantage estimation method ('simple' or 'gae').
+        gamma (float | np.float32): Discount factor.
+        lam (float | np.float32): GAE lambda parameter.
+        clip_ratio (float | np.float32): PPO clipping ratio.
+        grad_norm (float | None): Maximum gradient norm for clipping.
+        opt_epochs (int): Number of optimization epochs per update.
+        c1 (float | np.float32): Value loss coefficient.
+        c2 (float | np.float32): Entropy bonus coefficient.
+        debug (bool): Enables debug output and tensor checks.
+    """
     def __init__(
             self, num_features: int,
             num_actions: int,
@@ -55,7 +59,7 @@ class PPOAgent:
             opt_epochs: int = 10,
             c1: float | np.float32 = 0.05,
             c2: float | np.float32 = 0.01,
-            debug: bool = False
+            debug: bool = False,
         ):
 
         self.opt_epochs = opt_epochs
@@ -104,12 +108,35 @@ class PPOAgent:
 
 
     def save(self, save_path: str = 'models_params') -> None:
+        """
+        Saves actor and critic model parameters to disk.
+
+        Args:
+            save_path (str): Directory name for saving model parameters.
+
+        Returns:
+            None
+        """
         intermediate_path = os.path.join('models', 'algorithms')
         self.actor.save(path=os.path.join(DIR, intermediate_path, save_path, 'ppo', 'actor.pth'))
         self.critic.save(path=os.path.join(DIR, intermediate_path, save_path, 'ppo', 'critic.pth'))
 
 
     def act(self, observation: np.ndarray) -> Tuple[torch.tensor, torch.tensor, torch.tensor, torch.tensor, torch.tensor]:
+        """
+        Computes an action and value estimate from the current observation.
+
+        Args:
+            observation (np.ndarray): Current environment observation window.
+
+        Returns:
+            Tuple[torch.tensor, torch.tensor, torch.tensor, torch.tensor, torch.tensor]:
+                Continuous log probabilities,
+                discrete action logits,
+                continuous action,
+                discrete action,
+                value estimate.
+        """
         with torch.no_grad():
             mixed = self.actor.forward(observation.reshape(1, *observation.shape))
 
@@ -132,7 +159,17 @@ class PPOAgent:
 
 
     def compute_cont_log_probs(self, actions: np.ndarray | torch.Tensor, mean: torch.Tensor, log_std: torch.Tensor) -> torch.Tensor:
+        """
+        Computes log probabilities of continuous actions under a squashed Gaussian policy.
 
+        Args:
+            actions (np.ndarray | torch.Tensor): Continuous actions taken.
+            mean (torch.Tensor): Mean of the Gaussian distribution.
+            log_std (torch.Tensor): Log standard deviation of the Gaussian distribution.
+
+        Returns:
+            torch.Tensor: Log probabilities of the continuous actions.
+        """
         actions = torch.reshape(actions, shape=(actions.shape[0], 1))
 
         log_std_clipped = torch.clip(log_std, self.LOG_STD_MIN, self.LOG_STD_MAX)
@@ -159,8 +196,21 @@ class PPOAgent:
         return cont_log_probs
 
 
-    def compute_cont_action(self, mean, log_std):
+    def compute_cont_action(self, mean, log_std) -> tuple[torch.Tensor]:
+        """
+        Samples continuous actions from a squashed Gaussian policy and computes log probabilities.
 
+        Args:
+            mean (torch.Tensor): Mean of the Gaussian distribution.
+            log_std (torch.Tensor): Log standard deviation of the Gaussian distribution.
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+                Sampled continuous actions,
+                log probabilities,
+                mean,
+                standard deviation.
+        """
         log_std_clipped = torch.clip(log_std, self.LOG_STD_MIN, self.LOG_STD_MAX)
         std = torch.exp(log_std_clipped) + self.EPS
 
@@ -185,6 +235,16 @@ class PPOAgent:
 
 
     def discount_reward(self, rewards: torch.tensor, dones: torch.tensor) -> torch.tensor:
+        """
+        Computes discounted returns for a batch of rewards.
+
+        Args:
+            rewards (torch.tensor): Reward sequence.
+            dones (torch.tensor): Episode termination flags.
+
+        Returns:
+            torch.tensor: Discounted return values.
+        """
         result = []
         discounted_sum = 0.0
 
@@ -201,6 +261,15 @@ class PPOAgent:
 
 
     def standardize(self, values):
+        """
+        Normalizes a tensor to zero mean and unit variance.
+
+        Args:
+            values (torch.Tensor): Input tensor.
+
+        Returns:
+            torch.Tensor: Standardized tensor.
+        """
         return (values - torch.mean(values)) / (torch.std(values) + 1e-8)
 
 
@@ -210,6 +279,18 @@ class PPOAgent:
 
 
     def gae_advantages(self, rewards, values, dones, states) -> torch.tensor:
+        """
+        Computes Generalized Advantage Estimation (GAE).
+
+        Args:
+            rewards (torch.Tensor): Reward sequence.
+            values (torch.Tensor): Value estimates.
+            dones (torch.Tensor): Episode termination flags.
+            states (torch.Tensor): State sequence (unused, kept for API consistency).
+
+        Returns:
+            torch.Tensor: Standardized GAE advantages.
+        """
         T = rewards.shape[0]
         dones = dones.int()
         advantages = torch.zeros(T, dtype=torch.float32, device=DEVICE)
@@ -230,13 +311,40 @@ class PPOAgent:
 
 
     def get_advantages(self, rewards, values, dones, states) -> torch.Tensor:
+        """
+        Selects and computes advantages using the configured method.
+
+        Args:
+            rewards (torch.Tensor): Reward sequence.
+            values (torch.Tensor): Value estimates.
+            dones (torch.Tensor): Episode termination flags.
+            states (torch.Tensor): State sequence.
+
+        Returns:
+            torch.Tensor: Computed advantage values.
+        """
         if self.advantage_type == 'simple':
             return self.simple_advantages(rewards, values)
         return self.gae_advantages(rewards, values, dones, states)
 
 
     def _compute_actor_loss(self, new_log_probs, old_log_probs, new_logits_disc, old_logits_disc, log_std_new, actions_disc, value_loss, advantages):
+        """
+        Computes PPO actor loss for hybrid (discrete + continuous) action spaces.
 
+        Args:
+            new_log_probs (torch.Tensor): Log probabilities from current policy.
+            old_log_probs (torch.Tensor): Log probabilities from old policy.
+            new_logits_disc (torch.Tensor): Current discrete action logits.
+            old_logits_disc (torch.Tensor): Old discrete action logits.
+            log_std_new (torch.Tensor): Log standard deviation for entropy bonus.
+            actions_disc (torch.Tensor): Discrete actions taken.
+            value_loss (torch.Tensor): Critic loss term.
+            advantages (torch.Tensor): Advantage estimates.
+
+        Returns:
+            torch.Tensor: Actor loss value.
+        """
         actions_one_hot = torch.nn.functional.one_hot(actions_disc, self.num_actions).to(torch.float32)
 
         new_policy_disc = torch.softmax(new_logits_disc, dim=-1)
@@ -289,7 +397,21 @@ class PPOAgent:
             old_log_probs: torch.Tensor,
             old_logits: torch.Tensor,
         ):
+        """
+        Performs a gradient update step for actor and critic networks.
 
+        Args:
+            states (torch.Tensor): State batch.
+            returns (torch.Tensor): Discounted returns.
+            advantages (torch.Tensor): Advantage values.
+            actions_cont (torch.Tensor): Continuous actions.
+            actions_disc (torch.Tensor): Discrete actions.
+            old_log_probs (torch.Tensor): Previous log probabilities.
+            old_logits (torch.Tensor): Previous discrete logits.
+
+        Returns:
+            torch.Tensor: Total objective value after update.
+        """
         values = torch.squeeze(self.critic.forward(states))
         critic_loss = torch.mean(torch.square(returns - values))
 
@@ -353,7 +475,24 @@ class PPOAgent:
         advantages: torch.Tensor,
         dones: torch.Tensor,
     ) -> List[float]:
+        """
+        Performs multiple optimization epochs over a batch of experience.
 
+        Args:
+            states (torch.Tensor): State batch.
+            actions_cont (torch.Tensor): Continuous actions.
+            actions_disc (torch.Tensor): Discrete actions.
+            old_log_probs (torch.Tensor): Old continuous log probabilities.
+            old_logits (torch.Tensor): Old discrete logits.
+            values (torch.Tensor): Value estimates.
+            rewards (torch.Tensor): Reward sequence.
+            returns (torch.Tensor): Discounted returns.
+            advantages (torch.Tensor): Advantage values.
+            dones (torch.Tensor): Episode termination flags.
+
+        Returns:
+            List[float]: Objective values for each optimization epoch.
+        """
         objective_values = []
 
         for _ in range(self.opt_epochs):
@@ -382,6 +521,16 @@ class PPOAgent:
 
 
 def shuffle_and_split_into_mini_batches(*tensors, batch_size) -> list[list[torch.Tensor]]:
+    """
+    Shuffles tensors and splits them into mini-batches.
+
+    Args:
+        *tensors (torch.Tensor): Tensors to shuffle and batch.
+        batch_size (int): Number of samples per batch.
+
+    Returns:
+        list[list[torch.Tensor]]: List of mini-batches.
+    """
     tensors = list(tensors)
 
     N = tensors[0].shape[0]
@@ -400,7 +549,16 @@ def shuffle_and_split_into_mini_batches(*tensors, batch_size) -> list[list[torch
     return batches
 
 
-def to_tensor(*arrays):
+def to_tensor(*arrays) -> list[torch.Tensor]:
+    """
+    Converts lists of arrays or tensors into stacked PyTorch tensors.
+
+    Args:
+        *arrays (list): Lists containing numpy arrays or tensors.
+
+    Returns:
+        list[torch.Tensor]: Converted tensors.
+    """
     tensors = []
 
     for array in arrays:
@@ -423,6 +581,17 @@ def to_tensor(*arrays):
 
 
 def create_memory_window(memory_size: int, num_features: int, initial_obs: np.ndarray) -> deque:
+    """
+    Creates a fixed-size memory window for LSTM input.
+
+    Args:
+        memory_size (int): Number of stored observations.
+        num_features (int): Number of features per observation.
+        initial_obs (np.ndarray): Initial observation.
+
+    Returns:
+        deque: Initialized memory window.
+    """
     window = deque(maxlen=memory_size)
 
     for _ in range(memory_size):
@@ -432,6 +601,18 @@ def create_memory_window(memory_size: int, num_features: int, initial_obs: np.nd
 
 
 def evaluate_policy(env: gym.Env, agent: PPOAgent, num_episodes: int = 10, memory_size: int = 3) -> List[float]:
+    """
+    Evaluates the agent's policy over multiple episodes.
+
+    Args:
+        env (gym.Env): Evaluation environment.
+        agent (PPOAgent): PPO agent.
+        num_episodes (int): Number of episodes to evaluate.
+        memory_size (int): LSTM memory window size.
+
+    Returns:
+        List[float]: Total rewards per episode.
+    """
     rewards = []
     agent.actor.eval()
     agent.critic.eval()
@@ -453,29 +634,7 @@ def evaluate_policy(env: gym.Env, agent: PPOAgent, num_episodes: int = 10, memor
     agent.actor.train()
     agent.critic.train()
 
-    return np.mean(rewards)
-
-
-def plot_statistics(data: list, plot_name: str, rolling_window: int = 50):
-    episodes = np.arange(1, len(data) + 1)
-
-    plt.style.use("seaborn-v0_8")
-    plt.figure(figsize=(9, 6))
-
-    plt.plot(episodes, data, color="lightcoral", alpha=0.6, label="Raw")
-
-    if len(data) >= rolling_window:
-        rolling = np.convolve(data, np.ones(rolling_window)/rolling_window, mode="valid")
-        plt.plot(episodes[rolling_window-1:], rolling, color="red", linewidth=2.5, label=f"Rolling mean ({rolling_window})")
-
-    plt.title(f"Training Progress - {plot_name}", fontsize=16, fontweight="bold")
-    plt.xlabel("Episode", fontsize=14)
-    plt.ylabel("Mean Reward", fontsize=14)
-    plt.grid(True, linestyle="--", alpha=0.7)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(os.path.join('plots', 'ppo', plot_name.replace(' ', '_')), dpi=200)
-    plt.close()
+    return rewards
 
 
 def set_seed(seed: int = 42) -> None:
@@ -520,7 +679,41 @@ def train(
         debug: bool = False,
         seed: int = 123,
     ) -> np.float32:
+    """
+    Trains the PPO agent in the given environment.
 
+    Args:
+        env (gym.Env): Training environment.
+        eval_env (gym.Env | None): Optional evaluation environment.
+        hidden_layers (int): Number of LSTM layers.
+        hidden_units (int): Number of hidden units per layer.
+        dropout (float): Dropout rate.
+        actor_lr (float | np.float32): Actor learning rate.
+        critic_lr (float | np.float32): Critic learning rate.
+        advantage_type (str): Advantage method ('simple' or 'gae').
+        gamma (float | np.float32): Discount factor.
+        lam (float | np.float32): GAE lambda.
+        clip_ratio (float | np.float32): PPO clip ratio.
+        grad_norm (float | None): Gradient clipping norm.
+        opt_epochs (int): Optimization epochs per update.
+        c1 (float | np.float32): Value loss coefficient.
+        c2 (float | np.float32): Entropy coefficient.
+        batch_size (int): Mini-batch size.
+        memory_size (int): LSTM memory size.
+        replay_buffer_size (int): Steps before update.
+        stats_every (int): Logging interval.
+        eval_interval (int): Evaluation interval.
+        eval_episodes (int): Evaluation episodes.
+        total_steps (int): Total training steps.
+        del_model (bool): Deletes model after training.
+        display_stat (bool): Displays training statistics.
+        save_path (str): Model save path.
+        debug (bool): Enables debug mode.
+        seed (int): Random seed.
+
+    Returns:
+        np.float32: Mean evaluation reward.
+    """
     set_seed(seed)
 
     obs, _ = env.reset(seed=seed)
@@ -529,6 +722,8 @@ def train(
     last_n_losses = []
     total_rewards = []
     total_objective = []
+    eval_rewards = []
+
     ep_lens = []
 
     batch_actions_disc = []
@@ -621,31 +816,34 @@ def train(
 
         if step % eval_interval == 0 and eval_env is not None:
             rewards = evaluate_policy(eval_env, agent, eval_episodes)
+            eval_rewards.extend(rewards)
             avg_reward = np.mean(rewards)
 
             if display_stat:
-                pbar.write(f'Policy evaluation | Mean rewards {avg_reward:.3f} per {eval_episodes} episodes |')
+                tqdm.write(f'Policy evaluation | Mean rewards {avg_reward:.3f} per {eval_episodes} episodes |')
 
             if avg_reward > best_eval:
                 best_eval = avg_reward
-                agent.save(save_path)
 
         if step % stats_every == 0:
             avg_objective = 0 if len(last_n_losses) == 0 else np.mean(last_n_losses)
 
             if display_stat:
-                pbar.write(
-                    f'Per {stats_every} last steps | Mean rewards: {np.mean(last_n_rewards):.3f} | '
+                tqdm.write(
+                    f'Step {step} | Mean rewards: {np.mean(last_n_rewards):.3f} | '
                     f'Mean objective: {np.mean(avg_objective):.3f} |'
                 )
 
             last_n_rewards = []
             last_n_losses = []
 
+    agent.save(save_path)
+
     if display_stat:
-        plot_statistics(total_rewards, 'Total rewards per episode')
-        plot_statistics(ep_lens, 'Total episode lengths')
-        plot_statistics(total_objective, 'Objective')
+        plot_statistics(total_rewards, 'Total rewards (train env)', 'Rewards')
+        plot_statistics(eval_rewards, 'Total rewards (eval env)', 'Rewards')
+        plot_statistics(ep_lens, 'Total episode lengths', 'Lengths')
+        plot_statistics(total_objective, 'Objective', 'Objective')
 
     avg_eval_rewards = evaluate_policy(eval_env, agent, eval_env.num_episodes)
 
@@ -653,4 +851,4 @@ def train(
         del agent
         gc.collect()
 
-    return avg_eval_rewards
+    return np.mean(avg_eval_rewards)
