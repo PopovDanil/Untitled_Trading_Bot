@@ -310,7 +310,7 @@ The following plots were generated during training on `https://www.kaggle.com/da
 
 ## License
 
-MIT License
+Apache-2.0 license
 
 ---
 
